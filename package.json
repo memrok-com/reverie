@@ -1,0 +1,26 @@
+{
+  "name": "@memrok-com/reverie-pi",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "description": "Subjective chronological character memory and roleplay controls for Pi",
+  "engines": {
+    "node": ">=24.9.0 <25"
+  },
+  "scripts": {
+    "test": "node scripts/test-all.mjs",
+    "typecheck": "tsc -p pi/tsconfig.json",
+    "test:native": "node scripts/test-native.mjs",
+    "test:pi": "node scripts/build-pi-tests.mjs && node --test test/pi/*.test.mjs",
+    "build:native": "node scripts/cargo.mjs build --release --locked",
+    "build": "node scripts/build-pi.mjs",
+    "package": "node scripts/package-pi.mjs",
+    "test:package": "node scripts/pi-package-smoke.mjs"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "1.3.0",
+    "@types/node": "24.19.2",
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2"
+  }
+}

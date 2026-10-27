@@ -1,0 +1,24 @@
+{
+  "date": "2026-10-26",
+  "version": "0.3.0",
+  "piVersion": "1.3.0",
+  "platform": "win32-x64",
+  "method": "Actual installed Pi launcher in a PTY, isolated agent home and character folder, credential-free local OpenAI-compatible fixture",
+  "checks": [
+    "Package loads and character/date/memory/alternative widget is visible",
+    "Cancelling missing-date input restores the complete crafted opening in the editor",
+    "Story-date entry gives visible confirmation",
+    "Successful character reply uses configured local model",
+    "Ctrl+Alt+R generates a second alternative and preserves an unsent draft",
+    "Ctrl+Alt+Left selects the first saved alternative and preserves the draft",
+    "Ctrl+Alt+M opens the character and memory menu",
+    "Personality opens in the multiline editor and saves with visible confirmation",
+    "Memorize completes with a visible success notice and memorized widget state",
+    "Delete confirms, removes the chat and its native memory contribution, and opens a fresh linked chat",
+    "Scrollable custom memory inspector loads through the installed Pi runtime and closes with Enter"
+  ],
+  "limitations": [
+    "Deterministic fixture verifies interaction and integration, not external model prose quality",
+    "No user models, credentials or character data were changed by the terminal smoke"
+  ]
+}
