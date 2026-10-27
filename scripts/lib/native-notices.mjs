@@ -10,8 +10,8 @@ export async function nativeNotices(root, directory) {
   const metadata = JSON.parse(result.stdout);
   const notices = resolve(directory, 'notices');
   await mkdir(notices, { recursive: true });
-  const index = ['# Third-party notices', '', 'Reverie remains a private local package; its publication license is undecided.',
-    'These notices cover the native dependency sources, including build dependencies. They do not change Reverie’s license.', '',
+  const index = ['# Third-party notices', '', 'Reverie is licensed under Apache-2.0; see ../LICENSE and ../NOTICE.',
+    'These notices cover the native dependency sources, including build dependencies. Third-party components retain their own licenses.', '',
     'The Rust standard library attribution and its referenced license texts are included in rust/. The compiler is not distributed.',
     'SQLite is public domain. Its amalgamation header notice is reproduced below.', '', '## Cargo dependency sources', ''];
   async function collect(folder, target, top = true) {

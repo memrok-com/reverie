@@ -2,6 +2,8 @@
 
 Reverie adds character roleplay and subjective memory to an existing Pi installation. The verified build is Windows x64, Pi 1.3.0, Node 24.9–24.x.
 
+Reverie is experimental and licensed under Apache-2.0. Release bundles include LICENSE, NOTICE, and third-party notices. The source repository is [memrok-com/reverie](https://github.com/memrok-com/reverie); npm registry publication is pending.
+
 ## Install
 
 Keep the supplied release folder somewhere stable, then run:

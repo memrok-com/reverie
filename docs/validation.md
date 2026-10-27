@@ -14,4 +14,4 @@ The quality of remembered prose remains model-dependent. Retrieval uses lexical 
 
 Reply alternatives are branches. Only the selected history is memorized. Rejected branches remain in Pi's file until the whole chat is deleted. Branch changes after memorization require memorizing again. Later derivatives of a deleted episode are withheld until rebuilt; deletion never waits for a successful model call.
 
-The package is private and unpublished. Native executables are unsigned. Licensing and public distribution remain separate decisions.
+The source is public under Apache-2.0. The npm package has not been published to the registry, and native executables are unsigned. Release bundles include Reverie's LICENSE and NOTICE together with third-party license notices.

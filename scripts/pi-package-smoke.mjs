@@ -15,6 +15,10 @@ assert.equal(extracted.status, 0, extracted.stderr);
 const packageDir = join(root, 'package'), manifest = JSON.parse(await readFile(join(packageDir, 'package.json'), 'utf8'));
 assert.equal(manifest.name, '@memrok-com/reverie-pi'); assert.ok(manifest.pi.extensions.length === 1);
 assert.equal(manifest.dependencies, undefined);
+assert.equal(manifest.license, 'Apache-2.0');
+for (const name of ['LICENSE', 'NOTICE']) {
+  assert.equal(await readFile(join(packageDir, name), 'utf8'), await readFile(name, 'utf8'), `${name} must survive packaging unchanged`);
+}
 const client = new MemoryClient({ executable: executablePath(packageDir), characterId: 'portable', database: join(root, 'memory.sqlite'),
   readSource: async () => { throw new Error('Unexpected source access.'); }, infer: async () => { throw new Error('Unexpected inference.'); } });
 try { assert.equal((await client.request('ping')).runtime, 'rust'); await client.request('forget', { episodeId: 'absent' }); }
@@ -33,6 +37,6 @@ try {
   assert.doesNotMatch(rpc.getStderr(), /Extension.*error|Failed to load|Cannot find/);
 } finally { await rpc.stop(); }
 await writeFile('validation/pi-package-smoke.json', JSON.stringify({ version: manifest.version, piVersion: '1.3.0',
-  checks: ['archive hash and contents', 'relocated native engine', 'model-free deletion', 'Pi local package install', 'real Pi RPC startup and command discovery'],
+  checks: ['archive hash and contents', 'Apache-2.0 metadata and bundled LICENSE/NOTICE', 'relocated native engine', 'model-free deletion', 'Pi local package install', 'real Pi RPC startup and command discovery'],
   installedFromExtractedArchive: true }, null, 2) + '\n');
 console.log('Relocated archive, native engine, local package install and real Pi command loading passed.');

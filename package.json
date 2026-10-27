@@ -2,6 +2,11 @@
   "name": "@memrok-com/reverie-pi",
   "version": "0.3.0",
   "private": true,
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/memrok-com/reverie.git"
+  },
   "type": "module",
   "description": "Subjective chronological character memory and roleplay controls for Pi",
   "engines": {
