@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { sanitizeTestReport } from './lib/validation-report.mjs';
 import { mkdirSync } from 'node:fs';
-const reportDirectory = process.env.REVERIE_VALIDATION_DIR ?? 'validation';
+const reportDirectory = process.env.REVERIE_VALIDATION_DIR ?? '.work/validation';
 mkdirSync(reportDirectory, { recursive: true });
 for (const args of [
   ['node_modules/typescript/bin/tsc', '-p', 'pi/tsconfig.json'],

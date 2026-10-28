@@ -5,7 +5,7 @@ import { nativeEnginePath } from './lib/native-toolchain.mjs';
 import { mkdirSync } from 'node:fs';
 
 const root = resolve(import.meta.dirname, '..');
-const reportDirectory = process.env.REVERIE_VALIDATION_DIR ?? 'validation';
+const reportDirectory = process.env.REVERIE_VALIDATION_DIR ?? '.work/validation';
 mkdirSync(resolve(root, reportDirectory), { recursive: true });
 const reportPath = `${reportDirectory}/native-tests.xml`;
 function run(args, env = process.env) {
