@@ -15,8 +15,14 @@ use std::time::{Duration, Instant};
 
 struct Wire {
     output: Mutex<BufWriter<io::Stdout>>,
-    pending: Mutex<HashMap<String, mpsc::SyncSender<Result<Value>>>>,
+    pending: Mutex<HashMap<String, PendingCallback>>,
     closed: AtomicBool,
+    reflection_inactivity: Duration,
+}
+
+struct PendingCallback {
+    sender: mpsc::SyncSender<Result<Value>>,
+    progress: Option<Arc<Mutex<Instant>>>,
 }
 
 impl Wire {
@@ -36,8 +42,8 @@ impl Wire {
     }
     fn close(&self) {
         self.closed.store(true, Ordering::Release);
-        for (_, sender) in self.pending.lock().unwrap().drain() {
-            let _ = sender.send(Err(Error::new(
+        for (_, pending) in self.pending.lock().unwrap().drain() {
+            let _ = pending.sender.send(Err(Error::new(
                 "HOST_DISCONNECTED",
                 "The host disconnected.",
             )));
@@ -50,26 +56,42 @@ impl Bridge for Wire {
         cancel.check()?;
         let id = uuid::Uuid::new_v4().to_string();
         let (sender, receiver) = mpsc::sync_channel(1);
+        let reflecting = method == "model.reflect";
+        let activity = Arc::new(Mutex::new(Instant::now()));
+        let timeout = if reflecting {
+            self.reflection_inactivity
+        } else {
+            Duration::from_secs(180)
+        };
         {
             let mut pending = self.pending.lock().unwrap();
             if self.closed.load(Ordering::Acquire) {
                 return Err(Error::new("HOST_DISCONNECTED", "The host disconnected."));
             }
-            pending.insert(id.clone(), sender);
+            pending.insert(
+                id.clone(),
+                PendingCallback {
+                    sender,
+                    progress: reflecting.then(|| Arc::clone(&activity)),
+                },
+            );
         }
         let result = (|| {
             self.send(json!({"callId":id,"method":method,"params":params}))?;
-            let deadline = Instant::now() + Duration::from_secs(180);
             loop {
                 if let Err(error) = cancel.check() {
                     let _ = self.send(json!({"cancelCall":id}));
                     return Err(error);
                 }
-                if Instant::now() >= deadline {
+                if activity.lock().unwrap().elapsed() >= timeout {
                     let _ = self.send(json!({"cancelCall":id}));
                     return Err(Error::new(
                         "CALLBACK_TIMEOUT",
-                        "The host did not finish a source read or reflection in time. Previous memory is unchanged.",
+                        if reflecting {
+                            "The model stopped reporting reflection progress. Increase REVERIE_REFLECTION_INACTIVITY_SECONDS for slow models. Previous memory is unchanged."
+                        } else {
+                            "The host did not finish reading episode source in time. Previous memory is unchanged."
+                        },
                     ));
                 }
                 match receiver.recv_timeout(Duration::from_millis(20)) {
@@ -95,6 +117,7 @@ pub fn serve(character_id: String, database: &Path, settings: Settings) -> Resul
         output: Mutex::new(BufWriter::new(io::stdout())),
         pending: Mutex::new(HashMap::new()),
         closed: AtomicBool::new(false),
+        reflection_inactivity: Duration::from_millis(settings.reflection_inactivity_ms),
     });
     let bridge: Arc<dyn Bridge> = wire.clone();
     let engine = Arc::new(Reverie::new(
@@ -126,8 +149,20 @@ pub fn serve(character_id: String, database: &Path, settings: Settings) -> Resul
                 continue;
             }
         };
+        if let Some(id) = message.get("callProgress").and_then(Value::as_str) {
+            if let Some(activity) = wire
+                .pending
+                .lock()
+                .unwrap()
+                .get(id)
+                .and_then(|pending| pending.progress.as_ref())
+            {
+                *activity.lock().unwrap() = Instant::now();
+            }
+            continue;
+        }
         if let Some(id) = message.get("callId").and_then(Value::as_str) {
-            if let Some(sender) = wire.pending.lock().unwrap().remove(id) {
+            if let Some(pending) = wire.pending.lock().unwrap().remove(id) {
                 let result = if let Some(error) = message.get("error") {
                     Err(Error::new(
                         error
@@ -142,7 +177,7 @@ pub fn serve(character_id: String, database: &Path, settings: Settings) -> Resul
                 } else {
                     Ok(message.get("result").cloned().unwrap_or(Value::Null))
                 };
-                let _ = sender.send(result);
+                let _ = pending.sender.send(result);
             }
             continue;
         }

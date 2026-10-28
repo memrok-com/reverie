@@ -55,7 +55,7 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
     context = ctx;
     if (!catalog) catalog = new Catalog(dataHome);
     if (!service) service = new MemoryService(catalog, options.executable ?? executablePath(resolve(dirname(fileURLToPath(import.meta.url)), '..')),
-      async (request, { modelKey, signal }) => {
+      async (request, { modelKey, signal, onProgress }) => {
         const route = JSON.parse(modelKey) as { provider: string; model: string; thinking?: ThinkingLevel };
         const active = context;
         if (!active) throw new Error('Pi closed the model connection.');
@@ -66,6 +66,7 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
         { maxTokens: request.maxTokens, signal, reasoning: route.thinking === 'off' ? undefined : route.thinking });
         let text = '';
         for await (const event of stream) {
+          if ((event.type === 'text_delta' || event.type === 'thinking_delta') && event.delta) onProgress();
           if (event.type === 'text_delta') text += event.delta;
           if (event.type === 'error') throw new Error(event.error.errorMessage ?? 'The selected model could not form memory.');
           if (event.type === 'done' && event.reason === 'length') throw new Error('Memory formation reached the model output limit.');

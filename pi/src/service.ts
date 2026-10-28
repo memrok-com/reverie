@@ -15,12 +15,15 @@ export class MemoryService {
   private clients = new Map<string, MemoryClient>();
   private reconciling?: Promise<number>;
   constructor(readonly catalog: Catalog, readonly executable: string,
-    private infer: (request: ReflectionRequest, options: { modelKey: string; signal: AbortSignal }) => Promise<string>,
+    private infer: (request: ReflectionRequest, options: { modelKey: string; signal: AbortSignal; onProgress(): void }) => Promise<string>,
     private onSourceUnavailable: (source: SourceRecord, error: unknown) => void = () => {}) {}
   client(characterId: string): MemoryClient {
     let client = this.clients.get(characterId);
     if (!client) {
       client = new MemoryClient({ executable: this.executable, characterId, database: this.catalog.memoryPath,
+        ...(process.env.REVERIE_REFLECTION_INACTIVITY_SECONDS === undefined ? {} : {
+          settings: { reflectionInactivityMs: Number(process.env.REVERIE_REFLECTION_INACTIVITY_SECONDS) * 1000 },
+        }),
         readSource: async (id, signal) => {
           signal.throwIfAborted();
           const source = this.catalog.source(id);

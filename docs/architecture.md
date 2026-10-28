@@ -8,6 +8,8 @@ Pi owns source conversations, active branches, model/provider settings, credenti
 
 The extension starts a native process lazily for each character in use and speaks a JSON-lines stdio protocol. The process asks the adapter for source or reflection. Reflection uses Pi's configured model registry, preserving request-time authentication. The child environment excludes credential-shaped variables. Local retrieval does not invoke a model.
 
+Reflection callbacks use a configurable inactivity deadline (ten minutes by default), renewed by text/thinking deltas through a callback-scoped `callProgress` message. Progress for an expired or unrelated callback cannot renew another operation; source reads retain their separate absolute three-minute deadline. Timeout aborts the host callback and fails publication atomically. Transport timeout settings are excluded from reflection input fingerprints so tuning them cannot regenerate memory. `REVERIE_REFLECTION_INACTIVITY_SECONDS` configures new extension processes; native clients can set `reflectionInactivityMs` in engine settings.
+
 ## Durable state
 
 A WAL-mode SQLite catalog stores characters and personas, canonical folder associations, folder-specific model choices, source session paths and selected leaves, reply recall explanations, shortcut preferences and deletion tombstones. The native SQLite database stores scoped episodes, selective recollections and derived impressions. Both live under Pi's agent data directory, outside the installed package.
