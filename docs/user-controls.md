@@ -23,6 +23,8 @@ Run `/reverie` or Ctrl+Alt+M to open the character and memory menu.
 | `/reverie unmemorize` | Withdraw this episode while keeping its chat. Refresh dependent memory. |
 | `/reverie rebuild` | Repair affected included episodes using their selected branches, preserving unchanged published contributions. |
 | `/reverie cancel` | Cancel the ongoing memory operation without replacing the last published memory. |
+| `/reverie backup [new-file.zip]` | Export this character's playable story, Pi sources, selected branches and memory in one versioned ZIP. |
+| `/reverie restore [file.zip]` | Restore into an unlinked folder, preserving identities and refusing existing-story collisions. |
 | `/reverie reroll` | Generate a reply to the latest user message, including retrying a failed or interrupted first generation. |
 | `/reverie previous` / `next` | Cycle saved alternatives, without generating another reply. |
 | `/reverie keys` | Configure shortcuts; reload to apply. |
@@ -43,6 +45,8 @@ Commands, UI notices and injected recollections are excluded from played source.
 Slow reflection can continue as long as the model supplies text or thinking progress. The default inactivity limit is ten minutes; each progress update renews it. To allow longer silent thinking, set `REVERIE_REFLECTION_INACTIVITY_SECONDS` before starting Pi (for example, `$env:REVERIE_REFLECTION_INACTIVITY_SECONDS = '1800'` in PowerShell for thirty minutes). Restart Pi after changing it. Values from 0.1 seconds to 24 hours are supported. Changing this timeout preserves published memory. Source reads retain a separate three-minute limit. A stalled operation reports an error and preserves the last published memory; **Cancel memory operation** remains available while reflection is active.
 
 Malformed or out-of-range timeout values produce one warning naming the setting and use the default limit, preserving usable memory engines. Valid fractional seconds are rounded to the nearest millisecond.
+
+**Story backup** groups export/restore under the main menu. Backups include the current folder's memory switch and model preference, while credentials stay in Pi's own configuration. Restore relocates sources and opens a fresh chat; **Episode chats** resumes the restored story. An unavailable model needs an explicit replacement before generation. See [backup format, consistency and recovery](story-backup.md).
 
 Empty recall sends no memory text to the model. Actual recollections are provided as private background in the character's system context, never as user dialogue or a fabricated assistant reply. `/reverie explain` still shows exactly which recollections were supplied.
 

@@ -19,6 +19,8 @@ assert.equal(manifest.license, 'Apache-2.0');
 for (const name of ['LICENSE', 'NOTICE']) {
   assert.equal(await readFile(join(packageDir, name), 'utf8'), await readFile(name, 'utf8'), `${name} must survive packaging unchanged`);
 }
+assert.equal(await readFile(join(packageDir, 'notices/fflate-LICENSE.txt'), 'utf8'), await readFile('node_modules/fflate/LICENSE', 'utf8'));
+assert.equal(await readFile(join(packageDir, 'story-backup.md'), 'utf8'), await readFile('docs/story-backup.md', 'utf8'));
 const client = new MemoryClient({ executable: executablePath(packageDir), characterId: 'portable', database: join(root, 'memory.sqlite'),
   readSource: async () => { throw new Error('Unexpected source access.'); }, infer: async () => { throw new Error('Unexpected inference.'); } });
 try { assert.equal((await client.request('ping')).runtime, 'rust'); await client.request('forget', { episodeId: 'absent' }); }

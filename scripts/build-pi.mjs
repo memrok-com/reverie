@@ -24,13 +24,15 @@ catch (error) { if (error.code !== 'ENOENT') throw error; }
 if (!engineUnchanged) await copyFile(engineSource, engineTarget);
 await copyFile(resolve(root, 'docs/quickstart.md'), resolve(directory, 'README.md'));
 await copyFile(resolve(root, 'docs/user-controls.md'), resolve(directory, 'CONTROLS.md'));
+await copyFile(resolve(root, 'docs/story-backup.md'), resolve(directory, 'story-backup.md'));
 for (const name of ['LICENSE', 'NOTICE']) await copyFile(resolve(root, name), resolve(directory, name));
 await nativeNotices(root, directory);
+await copyFile(resolve(root, 'node_modules/fflate/LICENSE'), resolve(directory, 'notices/fflate-LICENSE.txt'));
 await writeFile(resolve(directory, 'package.json'), JSON.stringify({ name: metadata.name, version: metadata.version, private: true,
   description: metadata.description, type: 'module', license: metadata.license, repository: metadata.repository,
   keywords: ['pi-package', 'roleplay', 'memory'],
   engines: { node: metadata.engines.node }, os: ['win32'], cpu: ['x64'], pi: { extensions: ['./lib/extension.js'] },
-  files: ['lib', 'bin', 'notices', 'LICENSE', 'NOTICE', 'README.md', 'CONTROLS.md', 'manifest.json'] }, null, 2) + '\n');
+  files: ['lib', 'bin', 'notices', 'LICENSE', 'NOTICE', 'README.md', 'CONTROLS.md', 'story-backup.md', 'manifest.json'] }, null, 2) + '\n');
 const files = {};
 async function scan(folder = '') {
   for (const entry of await readdir(resolve(directory, folder), { withFileTypes: true })) {

@@ -577,6 +577,36 @@ test('episode browser shows full future memory and attributed source without sup
   assert.equal(f.errors.length, 0, JSON.stringify(f.errors));
 });
 
+test('Pi backup restores into another folder, resumes the selected reply and handles an unavailable saved model', async t => {
+  const f = await fixture(t); await f.setup(); f.inputs.push('2010-01-01 The lighthouse');
+  await f.session.prompt('I offer a blue lantern.');
+  await f.command('reroll'); await f.until(() => alternatives(f.manager.getEntries(), f.manager.getBranch())?.replies.length === 2 && f.session.isIdle);
+  await f.command('previous');
+  await f.command('memorize'); await f.until(() => f.inspections.some(text => text.includes('Published episode review')));
+  const id = f.manager.getSessionId(), selected = extractSource(f.manager.getBranch()), archive = resolve(f.root, 'playable-story.zip');
+  await f.command('off');
+  const catalog = new Catalog(f.home);
+  catalog.setFolderModel(f.cwd, { provider: 'missing', modelId: 'absent', thinkingLevel: 'high' }); catalog.close();
+  const requests = f.requests.length; await f.command(`backup ${archive}`);
+  assert.ok(f.notices.some(item => item.message.startsWith('Character story backed up:')));
+  assert.equal(f.requests.length, requests);
+  const restored = await fixture(t, { root: resolve('.work/pi-integration', randomUUID()) });
+  await restored.command(`restore ${archive}`);
+  assert.ok(restored.notices.some(item => item.message.startsWith('Mara restored.')));
+  assert.ok(restored.notices.some(item => /Saved folder model missing\/absent is unavailable/.test(item.message)));
+  restored.choices.push(0, 'Resume'); await restored.command('chats');
+  assert.equal(restored.manager.getSessionId(), id);
+  assert.deepEqual(extractSource(restored.manager.getBranch()), selected);
+  restored.choices.push('Read recollections'); await restored.command('memory episode');
+  assert.match(restored.inspections.at(-1), /I remember The lighthouse/);
+  await restored.session.prompt('Continue our story.');
+  assert.equal(restored.requests.length, 0); assert.equal(restored.draft, 'Continue our story.');
+  restored.choices.push(0); await restored.command('model');
+  await restored.command('on'); await restored.command('rebuild');
+  await restored.until(() => restored.notices.some(item => item.message.startsWith('Memory updated:')));
+  assert.equal(restored.errors.length, 0, JSON.stringify(restored.errors));
+});
+
 test('episode history exposes full intervals and memory, and starts a scene in a gap without future recall', async t => {
   const f = await fixture(t); await f.setup(); f.inputs.push('2000-01-01 The meeting');
   await f.session.prompt('We meet.'); await f.command('when 2001-01-01');

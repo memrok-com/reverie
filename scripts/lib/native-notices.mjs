@@ -45,6 +45,6 @@ export async function nativeNotices(root, directory) {
   index.push('', '## Compiler runtime attribution', '',
     'MinGW-w64 14.0.0 notices: https://github.com/mingw-w64/mingw-w64/tree/v14.0.0',
     'GCC 16.2.0 runtime exception and GPL text: https://github.com/gcc-mirror/gcc/tree/releases/gcc-16.2.0', '',
-    'The Pi extension uses Node built-ins at runtime. Pi supplies its own model and extension APIs; its distribution carries its own notices.', '');
+    'The Pi extension bundles fflate 0.8.3 for story ZIP archives (MIT; see fflate-LICENSE.txt) and otherwise uses Node built-ins. Pi supplies its own model and extension APIs; its distribution carries its own notices.', '');
   await writeFile(resolve(notices, 'README.md'), index.join('\n'));
 }

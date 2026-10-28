@@ -11,6 +11,7 @@ The current verified release supports **Pi 1.3.0, Windows x64 and Node 24.9–24
 Start with the [quickstart](docs/quickstart.md). The local installable directory is `dist/reverie-pi`; an npm archive is produced by `npm run package`. No Rust compiler, separate server, or Docker container is needed by a user.
 
 - [User controls](docs/user-controls.md)
+- [Story backup and restore](docs/story-backup.md)
 - [Architecture](docs/architecture.md)
 - [Development and verification](docs/development.md)
 - [Validation and limitations](docs/validation.md)
