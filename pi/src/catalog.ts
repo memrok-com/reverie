@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync, realpathSync } from 'node:fs';
+import { constants, mkdirSync, realpathSync } from 'node:fs';
 import { access } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -17,7 +17,8 @@ function directoryKey(cwd: string): string {
 export class Catalog {
   readonly db: DatabaseSync;
   readonly memoryPath: string;
-  constructor(readonly directory: string) {
+  private unavailableSources = new Set<string>();
+  constructor(readonly directory: string, private sourceAccess: typeof access = access) {
     mkdirSync(directory, { recursive: true }); this.memoryPath = join(directory, 'memory.sqlite');
     this.db = new DatabaseSync(join(directory, 'catalog.sqlite'));
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
@@ -81,14 +82,20 @@ export class Catalog {
   recall(replyId: string): unknown { const row = this.db.prepare('SELECT data FROM recalls WHERE replyId=?').get(replyId); return row ? JSON.parse(String(row.data)) : undefined; }
   preference(key: string, fallback: string): string { return String(this.db.prepare('SELECT value FROM preferences WHERE key=?').get(key)?.value ?? fallback); }
   setPreference(key: string, value: string): void { this.db.prepare('INSERT INTO preferences VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, value); }
-  async missingSources(): Promise<SourceRecord[]> {
+  async missingSources(onUnavailable: (source: SourceRecord, error: unknown) => void = () => {}): Promise<SourceRecord[]> {
     const pending: SourceRecord[] = [];
     for (const source of this.sources()) {
       if (source.deleted === 2) continue;
       if (!source.deleted) {
-        try { await access(source.path); }
+        try { await this.sourceAccess(source.path, constants.R_OK); this.unavailableSources.delete(source.episodeId); }
         catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+            if (!this.unavailableSources.has(source.episodeId)) {
+              this.unavailableSources.add(source.episodeId); onUnavailable(source, error);
+            }
+            continue;
+          }
+          this.unavailableSources.delete(source.episodeId);
           this.tombstone(source.episodeId); source.deleted = 1;
         }
       }
