@@ -38,6 +38,10 @@ Known source files are checked on startup, periodically and before recall. A mis
 
 Recall-explanation records for an affected character are cleared during cleanup. Original transcripts are deleted only by an explicit delete action or the host/user; the memory engine does not delete source files. Built-in Pi deletion has no extension event in 1.3.0, so reconciliation is required in addition to Reverie's integrated delete command.
 
+## Story portability
+
+Versioned story ZIPs contain one character's scoped catalog/native snapshot and canonical Pi sources with selected leaves. Backup captures and verifies metadata under short write locks, with source I/O outside them; changes to the story abort capture. Restore validates a separate native database before publication. A journal and process-lifetime SQLite ownership lock recover interrupted imports without relying on PID liveness. Restored Pi sessions remain canonical under the destination data directory, with relocated headers and no dependency on old paths. Account credentials and unrelated stories are excluded. See the [backup contract](story-backup.md).
+
 ## Boundaries
 
 The previous Node engine and DSH adapter are retired. Their user data is neither erased nor automatically imported. Pi does not provide a complete built-in persona or reply-variant product: those controls belong to this extension. Episodic reflection still needs the full selected source to fit the chosen model's context window. Dates are explicit Gregorian dates/zoned timestamps; episodes cannot interleave.

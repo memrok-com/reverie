@@ -4,6 +4,7 @@ import { access } from 'node:fs/promises';
 import { resolve, join, dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
+import { recoverStoryRestores } from './story-backup.js';
 
 export interface Character { id: string; name: string; persona: string }
 export interface Binding { characterId: string; enabled: boolean }
@@ -31,6 +32,7 @@ export class Catalog {
     if (!this.db.prepare('PRAGMA table_info(folder_models)').all().some(column => column.name === 'thinkingLevel')) {
       this.db.exec('ALTER TABLE folder_models ADD COLUMN thinkingLevel TEXT');
     }
+    try { recoverStoryRestores(this); } catch (error) { this.db.close(); throw error; }
   }
   characters(): Character[] { return this.db.prepare('SELECT * FROM characters ORDER BY name,id').all() as unknown as Character[]; }
   character(id: string): Character | undefined { return this.db.prepare('SELECT * FROM characters WHERE id=?').get(id) as unknown as Character | undefined; }

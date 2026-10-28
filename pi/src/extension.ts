@@ -15,6 +15,7 @@ import { alternatives, extractSource, ownerOf, sourceHash, textContent } from '.
 import type { Episode, Recall, MemoryInspection, InspectedEpisode, StoredMemory } from './contracts.js';
 import { episodeText, impressionsText, memoryText, sourcesText, stateLabel } from './memory-view.js';
 import { errorCode, errorMessage } from './errors.js';
+import { exportStory, restoreStory } from './story-backup.js';
 
 const GUIDANCE = 'Stay in character. Play only your own actions and dialogue. Recollections are subjective: distinguish uncertain impressions from witnessed events, and do not invent shared events in memory gaps.';
 const DEFAULT_KEYS = { reroll: 'ctrl+alt+r', previous: 'ctrl+alt+left', next: 'ctrl+alt+right', menu: 'ctrl+alt+m' } as const;
@@ -38,7 +39,7 @@ function describeRecall(recall: Recall, episodes: Episode[]): string {
 /** All character behavior is scoped to an explicitly linked folder; ordinary Pi use stays dormant. */
 export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
   let catalog: Catalog | undefined, service: MemoryService | undefined, context: ExtensionContext | undefined;
-  let timer: ReturnType<typeof setInterval> | undefined, working = false;
+  let timer: ReturnType<typeof setInterval> | undefined, working = false, archiving = false;
   let originalTools: string[] | undefined, episode: Episode | undefined, lastRecall: Recall | undefined;
   let draftFromShortcut: string | undefined, currentCharacterId: string | undefined;
   let restoringModel = false, modelIssue: string | undefined;
@@ -493,8 +494,21 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
     await show(ctx, 'Eligible memory · player inspection', lines.join('\n\n'));
   }
   async function command(args: string, ctx: ExtensionCommandContext): Promise<void> {
+    if (archiving) throw new Error('Wait for the story backup or restore to finish.');
     ensure(ctx);
     const [action = 'menu', ...rest] = args.trim().split(/\s+/).filter(Boolean);
+    if (action === 'restore') {
+      if (!ctx.isIdle() || working) throw new Error('Finish or cancel the current operation before restoring a story.');
+      const path = rest.join(' ') || await ctx.ui.input('Story ZIP to restore · existing character identities are never overwritten');
+      if (!path?.trim()) return;
+      working = true; archiving = true;
+      let restored: Character;
+      try { restored = await restoreStory(catalog!, resolve(ctx.cwd, path.trim()), ctx.cwd, options.executable ?? executablePath(resolve(dirname(fileURLToPath(import.meta.url)), '..'))); }
+      finally { working = false; archiving = false; }
+      await ctx.newSession({ withSession: async fresh => {
+        fresh.ui.notify(`${restored.name} restored. Open /reverie chats to resume an episode or inspect memory. Saved model preferences may require a configured replacement.`, 'info');
+      } }); return;
+    }
     if (action === 'setup' || action === 'link') { await setup(ctx, action === 'link'); return; }
     if (action === 'keys') {
       for (const name of Object.keys(DEFAULT_KEYS) as Action[]) {
@@ -505,14 +519,35 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
     }
     if (action === 'menu') {
       const character = selected(ctx, false);
-      const choices = character ? ['Personality', 'Model for this folder', 'Story date', 'Episode chats', 'Memorize episode', 'Inspect memory', 'Explain last recall', 'Enable memory', 'Disable memory', 'Link character', 'Unlink character', 'Delete this chat', 'Rebuild memory', 'Cancel memory operation', 'Keyboard shortcuts'] : ['Create/link character', 'Keyboard shortcuts'];
+      const choices = character ? ['Personality', 'Model for this folder', 'Story date', 'Episode chats', 'Memorize episode', 'Inspect memory', 'Explain last recall', 'Enable memory', 'Disable memory', 'Link character', 'Unlink character', 'Delete this chat', 'Rebuild memory', 'Cancel memory operation', 'Story backup', 'Keyboard shortcuts'] : ['Create/link character', 'Restore character backup', 'Keyboard shortcuts'];
       const choice = await ctx.ui.select('Reverie', choices);
+      if (choice === 'Story backup') {
+        const backupAction = await ctx.ui.select('Story backup', ['Export character story', 'Restore character backup']);
+        if (backupAction) await command(backupAction === 'Export character story' ? 'backup' : 'restore', ctx); return;
+      }
+      if (choice === 'Restore character backup') { await command('restore', ctx); return; }
       const actions: Record<string, string> = { 'Personality': 'persona', 'Story date': 'when', 'Memorize episode': 'memorize', 'Inspect memory': 'memory', 'Explain last recall': 'explain', 'Enable memory': 'on', 'Disable memory': 'off', 'Link character': 'link', 'Unlink character': 'unlink', 'Delete this chat': 'delete', 'Rebuild memory': 'rebuild', 'Cancel memory operation': 'cancel', 'Create/link character': 'setup', 'Keyboard shortcuts': 'keys' };
       actions['Model for this folder'] = 'model';
       actions['Episode chats'] = 'chats';
       if (choice) await command(choice === 'Inspect memory' ? 'memory browse' : actions[choice]!, ctx); return;
     }
     const character = selected(ctx)!;
+    if (action === 'backup') {
+      assertOwner(ctx, character);
+      if (!ctx.isIdle() || working) throw new Error('Finish or cancel the current operation before backing up the story.');
+      const path = rest.join(' ') || await ctx.ui.input('New backup ZIP filename', `${character.name.replace(/[^\w-]/g, '_')}-${new Date().toISOString().slice(0, 10)}.reverie.zip`);
+      if (!path?.trim()) return;
+      working = true; archiving = true; status(ctx);
+      try {
+        remember(ctx); await service!.client(character.id).request('ping');
+        const header = ctx.sessionManager.getHeader();
+        await exportStory(catalog!, character.id, resolve(ctx.cwd, path.trim()), ctx.cwd, header ? {
+          id: ctx.sessionManager.getSessionId(), leaf: ctx.sessionManager.getLeafId(), rows: [header, ...ctx.sessionManager.getEntries()],
+        } : undefined);
+        ctx.ui.notify(`Character story backed up: ${resolve(ctx.cwd, path.trim())}`, 'info');
+      } finally { working = false; archiving = false; status(ctx); }
+      return;
+    }
     if (working && !['cancel', 'memory', 'explain'].includes(action)) throw new Error('Finish or cancel memory formation before changing character settings.');
     if (action === 'chats') { await chats(ctx, character); return; }
     if (action === 'model') {
@@ -582,13 +617,20 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
     await refresh(ctx); remember(ctx);
     timer = setInterval(() => { if (service && !working) void service.reconcile().catch(error => context?.ui.notify(errorMessage(error), 'error')); }, options.pollingMs ?? 3000); timer.unref();
   });
+  pi.on('session_before_switch', (_event, ctx) => {
+    if (archiving) { ctx.ui.notify('Wait for the story backup or restore to finish before changing chats.', 'info'); return { cancel: true }; }
+  });
+  pi.on('session_before_fork', (_event, ctx) => {
+    if (archiving) { ctx.ui.notify('Wait for the story backup or restore to finish before forking a chat.', 'info'); return { cancel: true }; }
+  });
   pi.on('input', async (event, ctx) => {
     ensure(ctx);
+    if (archiving) { ctx.ui.setEditorText(event.text); ctx.ui.notify('Wait for the story backup or restore to finish. Your message is restored in the editor.', 'info'); return { action: 'handled' }; }
     if (!catalog!.binding(ctx.cwd)) return { action: 'continue' };
     try {
+      if (working) throw new Error('Wait for memory formation to finish or cancel it before continuing the episode.');
       await restoreFolderModel(ctx);
       const character = selected(ctx)!; assertOwner(ctx, character); await service!.reconcile();
-      if (working) throw new Error('Wait for memory formation to finish or cancel it before continuing the episode.');
       if (catalog!.binding(ctx.cwd)?.enabled && !episode) {
         const date = event.text.match(/^\s*(?:date:\s*)?(\d{4}-\d{2}-\d{2}(?:T[^\s]+)?)/i)?.[1];
         if (!await setDate(ctx, date)) {
@@ -610,6 +652,7 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
   pi.on('context_with_system', async (event, ctx) => {
     const character = selected(ctx, false);
     const messages = event.messages.filter(message => !(message.role === 'custom' && ['reverie.recall', 'reverie.notice'].includes(message.customType)));
+    if (archiving) { ctx.abort(); ctx.ui.notify('Wait for the story backup or restore to finish.', 'info'); return { messages }; }
     // This also covers continuation paths that bypass the input handler. Pi catches
     // extension exceptions, so explicitly abort instead of relying on a thrown error.
     try { assertFolderModel(ctx); }
