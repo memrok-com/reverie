@@ -1,5 +1,5 @@
 use crate::error::{Error, Result, identifier};
-use crate::model::{Contribution, Episode, Recall, Recollection, Settings, Source};
+use crate::model::{Contribution, Correction, Episode, Recall, Recollection, Settings, Source};
 use crate::reflection::{self, fingerprint};
 use crate::store::MemoryStore;
 use crate::time::{DAY, assert_intervals, elapsed_description, fictional_time};
@@ -86,6 +86,7 @@ pub struct Reverie {
     pub(crate) store: Mutex<MemoryStore>,
     bridge: Arc<dyn Bridge>,
     operation: Arc<Mutex<Option<Operation>>>,
+    correction_preview: Mutex<Option<Value>>,
 }
 
 fn required<'a>(value: &'a Value, key: &str) -> Result<&'a str> {
@@ -130,6 +131,7 @@ impl Reverie {
             store: Mutex::new(store),
             bridge,
             operation: Arc::new(Mutex::new(None)),
+            correction_preview: Mutex::new(None),
         })
     }
 
@@ -141,6 +143,9 @@ impl Reverie {
             ),
             "when" => self.when(&params),
             "status" => self.status(),
+            "inspect" => self.inspect(&params),
+            "previewCorrection" => self.preview_correction(&params),
+            "applyCorrection" => self.apply_correction(&params),
             "forget" => {
                 let id = required(&params, "episodeId")?;
                 identifier(id, "Episode identity")?;
@@ -282,6 +287,304 @@ impl Reverie {
         Ok(
             json!({"characterId":self.character_id, "revision":revision, "episodes":episodes, "memories":count,
             "operation":self.operation.lock().unwrap().clone()}),
+        )
+    }
+
+    /// Complete player inspection is deliberately separate from bounded character retrieval.
+    pub fn inspect(&self, params: &Value) -> Result<Value> {
+        let active = params
+            .get("activeEpisodeId")
+            .map(|_| required(params, "activeEpisodeId"))
+            .transpose()?
+            .unwrap_or("");
+        let at = params.get("at").map(fictional_time).transpose()?;
+        let (revision, episodes, contributions, corrections) = {
+            let store = self.store.lock().unwrap();
+            store.assert_episode_owner(&self.character_id, active)?;
+            (
+                store.revision(&self.character_id)?,
+                store.episodes(&self.character_id)?,
+                store.contributions(&self.character_id)?,
+                store.corrections(&self.character_id)?,
+            )
+        };
+        let active_start = episodes
+            .iter()
+            .find(|item| item.id == active)
+            .map(|item| item.start);
+        let eligible = |item: &Contribution| {
+            at.map(|at| {
+                item.end <= at
+                    && item.episode_id != active
+                    && active_start.is_none_or(|start| item.start < start)
+            })
+        };
+        let impression_episode = contributions
+            .iter()
+            .filter(|item| eligible(item) == Some(true))
+            .max_by_key(|item| (item.end, item.start))
+            .map(|item| item.episode_id.clone());
+        let mut items = Vec::new();
+        let mut stale_prefix = false;
+        let mut prefix = fingerprint(&json!([]))?;
+        for episode in &episodes {
+            let contribution = contributions
+                .iter()
+                .find(|item| item.episode_id == episode.id);
+            let correction = corrections
+                .iter()
+                .find(|item| item.episode_id == episode.id);
+            let source = self.read_source(&episode.id, &Cancel::default());
+            let (freshness, messages, source_error, observed_hash) = match source {
+                Ok(Some(source)) => {
+                    let freshness = if contribution.is_some_and(|item| {
+                        item.source_hash != source.hash
+                            || item.start != episode.start
+                            || item.end != episode.now
+                            || item.label != episode.label
+                    }) {
+                        "stale"
+                    } else {
+                        "current"
+                    };
+                    (freshness, source.messages, None, Some(source.hash))
+                }
+                Ok(None) => ("deleted", Vec::new(), None, None),
+                Err(error) => ("unavailable", Vec::new(), Some(error.message), None),
+            };
+            let state = if !episode.included {
+                "not-memorized"
+            } else if contribution.is_none() {
+                "invalidated"
+            } else if freshness == "stale" || freshness == "deleted" || stale_prefix {
+                "stale"
+            } else if contribution
+                .is_some_and(|item| item.memories.is_empty() && item.impressions.is_empty())
+            {
+                "empty"
+            } else {
+                "published"
+            };
+            if episode.included
+                && (contribution.is_none()
+                    || matches!(freshness, "stale" | "deleted")
+                    || stale_prefix)
+            {
+                stale_prefix = true;
+            }
+            items.push(json!({"episode":episode,"state":state,"freshness":freshness,"sourceError":source_error,
+                "contribution":contribution,"sources":messages,"eligible":contribution.and_then(eligible),
+                "impressionsEligible":at.map(|_| impression_episode.as_deref() == Some(&episode.id)),
+                "correction":correction,"correctionStale":correction.map(|item| stale_prefix || item.prefix_hash != prefix || Some(&item.source_hash) != observed_hash.as_ref()),
+                "needsRebuild":episode.included && episode.input_hash.as_ref().is_none_or(String::is_empty)}));
+            if let Some(contribution) = contribution {
+                prefix = fingerprint(&json!([prefix, contribution.state_hash]))?;
+            }
+        }
+        if self.store.lock().unwrap().revision(&self.character_id)? != revision {
+            return Err(Error::new(
+                "STALE_OPERATION",
+                "Memory changed while inspecting it. Open inspection again.",
+            ));
+        }
+        Ok(
+            json!({"characterId":self.character_id,"revision":revision,"at":at,"activeEpisodeId":active,"episodes":items}),
+        )
+    }
+
+    pub fn preview_correction(&self, params: &Value) -> Result<Value> {
+        let id = required(params, "episodeId")?;
+        identifier(id, "Episode identity")?;
+        let release = params
+            .get("release")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let (revision, episode, old, pins) = {
+            let store = self.store.lock().unwrap();
+            store.assert_episode_owner(&self.character_id, id)?;
+            let episode = store
+                .episode(&self.character_id, id)?
+                .ok_or_else(|| Error::new("EPISODE_NOT_FOUND", "That episode no longer exists."))?;
+            (
+                store.revision(&self.character_id)?,
+                episode,
+                store.contributions(&self.character_id)?,
+                store.corrections(&self.character_id)?,
+            )
+        };
+        if params.get("revision").and_then(Value::as_i64) != Some(revision) {
+            return Err(Error::new(
+                "STALE_OPERATION",
+                "Memory changed since inspection. Inspect and preview again.",
+            ));
+        }
+        let pin = pins.iter().find(|item| item.episode_id == id);
+        if !release && (!episode.included || !old.iter().any(|item| item.episode_id == id)) {
+            return Err(Error::new(
+                "INVALID_INPUT",
+                "Only published recollections can be corrected. Memorize this episode first.",
+            ));
+        }
+        if release && pin.is_none() {
+            return Err(Error::new(
+                "INVALID_INPUT",
+                "This episode has no correction to release.",
+            ));
+        }
+        let before = old
+            .iter()
+            .find(|item| item.episode_id == id)
+            .cloned()
+            .or_else(|| {
+                pin.map(|pin| Contribution {
+                    episode_id: id.into(),
+                    label: episode.label.clone(),
+                    start: episode.start,
+                    end: episode.now,
+                    source_hash: pin.source_hash.clone(),
+                    input_hash: String::new(),
+                    dependencies: Vec::new(),
+                    memories: pin.memories.clone(),
+                    impressions: Vec::new(),
+                    state_hash: String::new(),
+                })
+            })
+            .ok_or_else(|| {
+                Error::new(
+                    "INVALID_INPUT",
+                    "Only published recollections can be corrected.",
+                )
+            })?;
+        let source = self
+            .read_source(id, &Cancel::default())?
+            .ok_or_else(|| Error::new("SOURCE_DELETED", "The played source was deleted."))?;
+        let mut after = before.clone();
+        if release {
+            // A branch/date change can move the episode before its published slot.
+            // Release must also invalidate derivatives at that earlier position.
+            after.start = before.start.min(episode.start);
+        }
+        if !release {
+            if source.hash != before.source_hash
+                || before.start != episode.start
+                || before.end != episode.now
+                || before.label != episode.label
+            {
+                return Err(Error::new(
+                    "STALE_SOURCE",
+                    "This contribution has unmemorized changes. Memorize it or release its stale correction before editing.",
+                ));
+            }
+            let index = params
+                .get("memoryIndex")
+                .and_then(Value::as_u64)
+                .and_then(|index| usize::try_from(index).ok())
+                .filter(|index| *index < after.memories.len())
+                .ok_or_else(|| Error::new("INVALID_INPUT", "Select a published recollection."))?;
+            let replacement = params
+                .get("replacement")
+                .cloned()
+                .ok_or_else(|| Error::new("INVALID_INPUT", "Supply a corrected recollection."))?;
+            // Apply the same length, score and source-reference validation as generated memory.
+            let (memories, _) = reflection::parse(
+                json!({"memories":[replacement],"impressions":[]}),
+                &source,
+                &[id.to_owned()],
+            )?;
+            if memories[0] == after.memories[index] {
+                return Err(Error::new(
+                    "INVALID_INPUT",
+                    "The recollection has not changed.",
+                ));
+            }
+            after.memories[index] = memories[0].clone();
+        }
+        after.impressions.clear();
+        after.input_hash.clear();
+        after.state_hash.clear();
+        let mut hash_input = serde_json::to_value(&after)?;
+        hash_input.as_object_mut().unwrap().remove("stateHash");
+        after.state_hash = fingerprint(&hash_input)?;
+        let affected: Vec<_> = old
+            .iter()
+            .filter(|item| item.episode_id != id && item.start >= after.start)
+            .collect();
+        let mut prefix = fingerprint(&json!([]))?;
+        for item in old.iter().filter(|item| item.start < before.start) {
+            prefix = fingerprint(&json!([prefix, item.state_hash]))?;
+        }
+        let released_pins: Vec<_> = pins
+            .iter()
+            .filter(|item| {
+                item.episode_id != id
+                    && self
+                        .store
+                        .lock()
+                        .unwrap()
+                        .episode(&self.character_id, &item.episode_id)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|episode| episode.start >= after.start)
+            })
+            .map(|item| item.episode_id.clone())
+            .collect();
+        let preview = json!({"token":uuid::Uuid::new_v4().to_string(),"revision":revision,"episodeId":id,"release":release,
+            "sourceHash":source.hash,"prefixHash":prefix,"before":before,"after":after,"affected":affected,"releasedPins":released_pins});
+        *self.correction_preview.lock().unwrap() = Some(preview.clone());
+        Ok(preview)
+    }
+
+    pub fn apply_correction(&self, params: &Value) -> Result<Value> {
+        let token = required(params, "token")?;
+        let preview = self
+            .correction_preview
+            .lock()
+            .unwrap()
+            .clone()
+            .filter(|item| item["token"].as_str() == Some(token))
+            .ok_or_else(|| {
+                Error::new(
+                    "STALE_OPERATION",
+                    "Preview this correction again before applying it.",
+                )
+            })?;
+        let id = required(&preview, "episodeId")?;
+        let source = self
+            .read_source(id, &Cancel::default())?
+            .ok_or_else(|| Error::new("SOURCE_DELETED", "The played source was deleted."))?;
+        if Some(source.hash.as_str()) != preview["sourceHash"].as_str() {
+            return Err(Error::new(
+                "STALE_SOURCE",
+                "Played source changed after the preview. Inspect and preview again.",
+            ));
+        }
+        let slot = self.operation.lock().unwrap();
+        if slot.is_some() {
+            return Err(Error::new(
+                "OPERATION_IN_PROGRESS",
+                "Finish or cancel memory formation before applying a correction.",
+            ));
+        }
+        let after: Contribution = serde_json::from_value(preview["after"].clone())?;
+        let correction = if preview["release"] == true {
+            None
+        } else {
+            Some(Correction {
+                episode_id: id.into(),
+                source_hash: source.hash,
+                prefix_hash: required(&preview, "prefixHash")?.into(),
+                memories: after.memories.clone(),
+            })
+        };
+        self.store.lock().unwrap().correct(
+            &self.character_id,
+            preview["revision"].as_i64().unwrap(),
+            &after,
+            correction.as_ref(),
+        )?;
+        *self.correction_preview.lock().unwrap() = None;
+        Ok(
+            json!({"episodeId":id,"invalidatedEpisodes":preview["affected"].as_array().unwrap().len(),"released":correction.is_none()}),
         )
     }
 
@@ -428,7 +731,7 @@ impl Reverie {
         cancel: &Cancel,
     ) -> Result<Value> {
         cancel.check()?;
-        let (revision, selected, old) = {
+        let (revision, selected, old, corrections) = {
             let store = self.store.lock().unwrap();
             store.ensure_character(&self.character_id)?;
             let episodes = store.episodes(&self.character_id)?;
@@ -446,13 +749,26 @@ impl Reverie {
                 .into_iter()
                 .map(|item| (item.episode_id.clone(), item))
                 .collect();
-            (store.revision(&self.character_id)?, selected, old)
+            (
+                store.revision(&self.character_id)?,
+                selected,
+                old,
+                store.corrections(&self.character_id)?,
+            )
         };
         let mut observations = HashMap::new();
         let mut deleted = Vec::new();
         for episode in &selected {
             match self.read_source(&episode.id, cancel)? {
                 Some(source) => {
+                    if corrections.iter().any(|item| {
+                        item.episode_id == episode.id && item.source_hash != source.hash
+                    }) {
+                        return Err(Error::new(
+                            "CORRECTION_SOURCE_CHANGED",
+                            "A corrected episode's played source changed. Inspect memory and release its correction before memorizing or rebuilding.",
+                        ));
+                    }
                     if source.messages.is_empty() {
                         return Err(Error::new(
                             "EMPTY_EPISODE",
@@ -480,6 +796,15 @@ impl Reverie {
                 continue;
             };
             cancel.check()?;
+            if corrections
+                .iter()
+                .any(|item| item.episode_id == episode.id && item.prefix_hash != prefix)
+            {
+                return Err(Error::new(
+                    "CORRECTION_DEPENDENCIES_CHANGED",
+                    "Earlier memory changed beneath a corrected episode. Inspect and release that episode's correction before rebuilding.",
+                ));
+            }
             let input_hash = fingerprint(
                 &json!({"reflectionVersion":reflection::REFLECTION_VERSION, "modelKey":model_key, "source":source.hash,
                 "start":episode.start, "end":episode.now, "label":episode.label, "prefix":prefix, "settings":self.settings}),
@@ -498,6 +823,15 @@ impl Reverie {
                     observations.len(),
                 );
                 let mut request = reflection::request(episode, source, &staged, &self.settings)?;
+                let correction = corrections
+                    .iter()
+                    .find(|item| item.episode_id == episode.id);
+                if let Some(correction) = correction {
+                    request["input"]["reviewedRecollections"] = json!({
+                        "instruction":"The player has corrected factual or attribution errors. These recollections are authoritative for memory formation, while their feelings remain subjective. Derive this episode's broader impressions from these reviewed recollections and eligible earlier memory. Do not repeat the corrected errors. Played source is unchanged. The engine will preserve the reviewed recollections exactly.",
+                        "memories":correction.memories
+                    });
+                }
                 let episode_ids: Vec<_> = staged
                     .iter()
                     .map(|item| item.episode_id.clone())
@@ -529,12 +863,15 @@ impl Reverie {
                         Err(error) => return Err(error),
                     }
                 }
-                let (memories, impressions) = parsed.ok_or_else(|| {
+                let (mut memories, impressions) = parsed.ok_or_else(|| {
                     Error::new(
                         "INVALID_REFLECTION",
                         "Reflection did not produce valid memory.",
                     )
                 })?;
+                if let Some(correction) = correction {
+                    memories = correction.memories.clone();
+                }
                 let mut item = Contribution {
                     episode_id: episode.id.clone(),
                     label: episode.label.clone(),

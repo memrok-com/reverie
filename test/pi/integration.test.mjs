@@ -529,3 +529,75 @@ test('edited Pi prompts reroll the edited text and memory inspection exposes eli
   await restarted.command('explain');
   assert.match(restarted.inspections.at(-1), /sources: The lighthouse/);
 });
+
+test('episode browser shows full future memory and attributed source without supplying it to earlier play', async t => {
+  const f = await fixture(t); await f.setup(); f.inputs.push('2020-01-01 The future secret');
+  await f.session.prompt('I hold FUTURE_SOURCE_SECRET. She whispers: "Keep this safe."');
+  await f.command('memorize'); await f.until(() => f.notices.some(item => item.message.startsWith('Memory updated:')));
+  await f.runtime.newSession(); f.inputs.push('2000-01-01 Before we met');
+  await f.session.prompt('We have never met.');
+  const entries = f.manager.getEntries().length, requests = f.requests.length;
+  f.choices.push(1, 0); await f.command('memory browse');
+  assert.match(f.inspections.at(-1), /Stored recollections/);
+  assert.match(f.inspections.at(-1), /I remember The future secret/);
+  assert.match(f.inspections.at(-1), /Retained detail: There was a blue lantern/);
+  assert.match(f.inspections.at(-1), /Emotional residue: I felt unsettled/);
+  assert.match(f.inspections.at(-1), /eligible at selected point: no/);
+  f.choices.push(1, 0); await f.command('memory sources');
+  assert.match(f.inspections.at(-1), /Player:\s+I hold FUTURE_SOURCE_SECRET/);
+  assert.match(f.inspections.at(-1), /She whispers: "Keep this safe\."/);
+  assert.match(f.inspections.at(-1), /Mara \(companion\)/);
+  f.choices.push(1); await f.command('memory impressions');
+  assert.match(f.inspections.at(-1), /Contributing episodes: The future secret/);
+  await f.command('memory eligible');
+  assert.doesNotMatch(f.inspections.at(-1), /I remember The future secret/);
+  assert.equal(f.requests.length, requests, 'Inspection must not call a model.');
+  assert.equal(f.manager.getEntries().length, entries, 'Inspection must not create context or played entries.');
+  await f.session.prompt('Who are you?');
+  assert.doesNotMatch(JSON.stringify(f.requests.at(-1)), /FUTURE_SOURCE_SECRET|The future secret|Stored recollections/);
+  await f.command('explain');
+  assert.doesNotMatch(f.inspections.at(-1), /The future secret/);
+  assert.equal(f.errors.length, 0, JSON.stringify(f.errors));
+});
+
+test('Pi correction editor previews dependents, respects cancel and persists the applied correction', async t => {
+  const f = await fixture(t); await f.setup(); f.inputs.push('2000-01-01 The lighthouse');
+  await f.session.prompt('I hold a blue lantern.');
+  const firstId = f.manager.getSessionId();
+  const sourceId = extractSource(f.manager.getBranch()).messages[0].id;
+  await f.command('memorize'); await f.until(() => f.notices.some(item => item.message.startsWith('Memory updated:')));
+  await f.runtime.newSession(); f.inputs.push('2010-01-01 The reunion'); await f.session.prompt('We meet again.');
+  await f.command('memorize'); await f.until(() => f.notices.filter(item => item.message.startsWith('Memory updated:')).length === 2);
+  await f.command('explain'); const historical = f.inspections.at(-1);
+  const inspect = async () => {
+    const catalog = new Catalog(f.home);
+    const client = new MemoryClient({ executable, database: catalog.memoryPath, characterId: catalog.characters()[0].id,
+      readSource: async () => { throw new Error('Unavailable in this read-only observer'); }, infer: async () => { throw new Error('No model'); } });
+    try { return await client.request('inspect'); } finally { await client.close(); catalog.close(); }
+  };
+  const original = await inspect(), entries = f.manager.getEntries().length;
+  for (const apply of [false, true]) {
+    f.controls.confirmDelete = apply;
+    f.choices.push(0, 0);
+    f.editors.push('The player held the lantern; I did not.', 'There was a blue lantern.', 'I felt unsettled.');
+    f.inputs.push(sourceId);
+    await f.command('memory correct');
+    assert.match(f.inspections.at(-1), /Before/);
+    assert.match(f.inspections.at(-1), /The player held the lantern/);
+    assert.match(f.inspections.at(-1), /The reunion · 1 recollections · 1 impressions/);
+    if (!apply) assert.equal((await inspect()).revision, original.revision);
+  }
+  let result = await inspect();
+  assert.equal(result.episodes.find(item => item.episode.id === firstId).contribution.memories[0].gist, 'The player held the lantern; I did not.');
+  assert.equal(result.episodes[1].state, 'invalidated');
+  assert.equal(f.manager.getEntries().length, entries);
+  await f.command('explain'); assert.equal(f.inspections.at(-1), historical, 'Saved reply context is historical.');
+  await f.command('rebuild'); await f.until(() => f.notices.filter(item => item.message.startsWith('Memory updated:')).length === 3);
+  result = await inspect(); assert.equal(result.episodes[1].state, 'published');
+  assert.equal(result.episodes[0].contribution.memories[0].gist, 'The player held the lantern; I did not.');
+  const path = f.manager.getSessionFile(); await f.close();
+  const restarted = await fixture(t, { root: f.root, path });
+  restarted.choices.push(0, 0); await restarted.command('memory browse');
+  assert.match(restarted.inspections.at(-1), /The player held the lantern; I did not/);
+  assert.match(restarted.inspections.at(-1), /corrected/);
+});

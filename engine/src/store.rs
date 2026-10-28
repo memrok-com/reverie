@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use crate::model::{Contribution, Episode, Impression, Memory};
+use crate::model::{Contribution, Correction, Episode, Impression, Memory};
 use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
 use std::{collections::HashSet, path::Path};
 
@@ -68,7 +68,7 @@ impl MemoryStore {
             "PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL;",
         )?;
         let version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if version > 1 {
+        if version > 2 {
             return Err(Error::new(
                 "UNSUPPORTED_DATABASE",
                 "This memory database needs a newer version of Reverie.",
@@ -166,6 +166,72 @@ impl MemoryStore {
             .collect()
     }
 
+    pub fn corrections(&self, character: &str) -> Result<Vec<Correction>> {
+        let texts = self
+            .db
+            .prepare_cached("SELECT data FROM corrections WHERE character_id=?")?
+            .query_map([character], |row| row.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        texts
+            .iter()
+            .map(|text| Ok(serde_json::from_str(text)?))
+            .collect()
+    }
+
+    /// Replace one reviewed contribution and invalidate all dependent derivatives atomically.
+    pub fn correct(
+        &mut self,
+        character: &str,
+        revision: i64,
+        target: &Contribution,
+        correction: Option<&Correction>,
+    ) -> Result<()> {
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current: i64 = tx.query_row(
+            "SELECT revision FROM characters WHERE id=?",
+            [character],
+            |row| row.get(0),
+        )?;
+        if revision != current {
+            return Err(Error::new(
+                "STALE_OPERATION",
+                "Memory changed after the preview. Inspect and preview again.",
+            ));
+        }
+        tx.execute("DELETE FROM memories WHERE character_id=? AND episode_id IN (SELECT id FROM episodes WHERE character_id=? AND start>=?)", params![character, character, target.start])?;
+        tx.execute(
+            "DELETE FROM contributions WHERE character_id=? AND start>=?",
+            params![character, target.start],
+        )?;
+        tx.execute("UPDATE episodes SET source_hash=NULL,input_hash=NULL,published_end=NULL WHERE character_id=? AND start>=?", params![character, target.start])?;
+        // A later pin was reviewed against the old prefix, so it cannot survive this edit.
+        tx.execute("DELETE FROM corrections WHERE character_id=? AND episode_id IN (SELECT id FROM episodes WHERE character_id=? AND start>?)", params![character, character, target.start])?;
+        if let Some(correction) = correction {
+            tx.execute("INSERT INTO corrections(character_id,episode_id,data) VALUES(?,?,?) ON CONFLICT(character_id,episode_id) DO UPDATE SET data=excluded.data",
+                params![character, target.episode_id, serde_json::to_string(correction)?])?;
+            tx.execute("INSERT INTO contributions(character_id,episode_id,start,end,input_hash,state_hash,data) VALUES(?,?,?,?,?,?,?)",
+                params![character,target.episode_id,target.start,target.end,target.input_hash,target.state_hash,serde_json::to_string(target)?])?;
+            tx.execute("UPDATE episodes SET source_hash=?,input_hash='',published_end=? WHERE character_id=? AND id=?", params![target.source_hash,target.end,character,target.episode_id])?;
+            for memory in &target.memories {
+                tx.execute("INSERT INTO memories(character_id,episode_id,available_at,gist,detail,feeling,cues,salience,confidence,source_ids) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    params![character,target.episode_id,target.end,memory.gist,memory.detail,memory.feeling,memory.cues.join(" "),memory.salience,memory.confidence,serde_json::to_string(&memory.source_message_ids)?])?;
+            }
+        } else {
+            tx.execute(
+                "DELETE FROM corrections WHERE character_id=? AND episode_id=?",
+                params![character, target.episode_id],
+            )?;
+        }
+        tx.execute(
+            "UPDATE characters SET revision=revision+1 WHERE id=?",
+            [character],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Remove source and every later derivative that could have learned from it.
     /// Inclusion choices for surviving episodes remain available for an explicit rebuild.
     pub fn forget_episode(&mut self, character: &str, episode: &str) -> Result<usize> {
@@ -183,6 +249,7 @@ impl MemoryStore {
         let Some(start) = start else {
             return Ok(0);
         };
+        tx.execute("DELETE FROM corrections WHERE character_id=? AND episode_id IN (SELECT id FROM episodes WHERE character_id=? AND now>=?)", params![character,character,start])?;
         let invalidated: i64 = tx.query_row(
             "SELECT COUNT(*) FROM contributions WHERE character_id=? AND end>=?",
             params![character, start],

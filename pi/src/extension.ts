@@ -11,7 +11,8 @@ import { fileURLToPath } from 'node:url';
 import { Catalog, type Character } from './catalog.js';
 import { MemoryService, executablePath } from './service.js';
 import { alternatives, extractSource, ownerOf, sourceHash, textContent } from './source.js';
-import type { Episode, Recall } from './contracts.js';
+import type { Episode, Recall, MemoryInspection, InspectedEpisode, StoredMemory } from './contracts.js';
+import { episodeText, impressionsText, memoryText, sourcesText, stateLabel } from './memory-view.js';
 import { errorCode, errorMessage } from './errors.js';
 
 const GUIDANCE = 'Stay in character. Play only your own actions and dialogue. Recollections are subjective: distinguish uncertain impressions from witnessed events, and do not invent shared events in memory gaps.';
@@ -198,7 +199,9 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
       });
     }
     else if (ctx.hasUI) await ctx.ui.select(`${title}\n\n${text}`, ['Close']);
-    else pi.sendMessage({ customType: 'reverie.notice', content: `${title}\n${text}`, display: true });
+    // Inspection can contain future knowledge. Never persist it as a chat entry,
+    // where a later request or compaction could turn it into character context.
+    else ctx.ui.notify(`${title}\n${text}`, 'info');
   }
   async function setup(ctx: ExtensionCommandContext, linkOnly = false): Promise<void> {
     if (!ctx.hasUI) throw new Error('Character setup needs interactive Pi or an RPC client with dialogs.');
@@ -335,6 +338,85 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
       manager.appendSessionInfo(episodeTitle(target, character.name));
     } });
   }
+  async function inspectMemory(ctx: ExtensionCommandContext, character: Character): Promise<MemoryInspection> {
+    remember(ctx); await service!.reconcile();
+    return service!.client(character.id).request('inspect', episode ? { activeEpisodeId: episode.id, at: episode.now } : {});
+  }
+  async function chooseEpisode(ctx: ExtensionContext, inspection: MemoryInspection, title: string): Promise<InspectedEpisode | undefined> {
+    const labels = inspection.episodes.map((item, index) => `${index + 1}. ${episodeTitle(item.episode, selected(ctx)!.name)} · ${stateLabel(item)}`);
+    if (!labels.length) { ctx.ui.notify('No dated episodes yet.', 'info'); return; }
+    const choice = await ctx.ui.select(title, labels);
+    return inspection.episodes[labels.indexOf(choice ?? '')];
+  }
+  async function correctMemory(ctx: ExtensionCommandContext, character: Character, inspection: MemoryInspection, item: InspectedEpisode, release = false): Promise<void> {
+    if (working || !ctx.isIdle()) throw new Error('Finish or cancel the current operation before correcting memory.');
+    const client = service!.client(character.id);
+    let replacement: StoredMemory | undefined, memoryIndex: number | undefined;
+    if (!release) {
+      if (!item.contribution?.memories.length) throw new Error('This episode has no published recollections to correct.');
+      const labels = item.contribution.memories.map((memory, index) => `${index + 1}. ${memory.gist}`);
+      const choice = await ctx.ui.select('Recollection to correct', labels);
+      memoryIndex = labels.indexOf(choice ?? '');
+      if (memoryIndex < 0) return;
+      await show(ctx, 'Supporting played source', sourcesText(item, character.name));
+      const original = item.contribution.memories[memoryIndex]!;
+      const gist = await ctx.ui.editor('Correct remembered meaning · preserve subjective belief unless factually wrong', original.gist);
+      if (gist === undefined) return;
+      const detail = await ctx.ui.editor('Correct retained detail', original.detail);
+      if (detail === undefined) return;
+      const feeling = await ctx.ui.editor('Emotional residue · leave intentional subjectivity intact', original.feeling);
+      if (feeling === undefined) return;
+      const references = await ctx.ui.input('Supporting message IDs (comma-separated, from played source)', original.sourceMessageIds.join(', '));
+      if (references === undefined) return;
+      replacement = { ...original, gist, detail, feeling, sourceMessageIds: references.split(',').map(id => id.trim()).filter(Boolean) };
+    }
+    const preview = await client.request('previewCorrection', { episodeId: item.episode.id, revision: inspection.revision, release, memoryIndex, replacement });
+    const label = (id: string) => inspection.episodes.find(item => item.episode.id === id)?.episode.label ?? id;
+    const lines = [release ? 'Release the saved correction. This episode will need re-memorizing.' : 'Save the reviewed recollections for future re-memorization and rebuilds.',
+      ...(release ? [] : ['Before', memoryText(preview.before.memories[memoryIndex!]!, memoryIndex!), 'After', memoryText(preview.after.memories[memoryIndex!]!, memoryIndex!)]),
+      `Remove ${preview.before.impressions.length} broader impressions from ${label(preview.episodeId)}:`,
+      ...preview.before.impressions.map(item => item.text),
+      'Invalidate later contributions (inclusion choices retained):',
+      ...preview.affected.map(item => `${label(item.episodeId)} · ${item.memories.length} recollections · ${item.impressions.length} impressions\n${item.memories.map(memoryText).join('\n\n')}\n${item.impressions.map(impression => impression.text).join('\n')}`),
+      `Release dependent correction snapshots: ${preview.releasedPins.map(label).join(', ') || '(none)'}`,
+      'Played dialogue is preserved. Previously supplied reply contexts remain historical. Rebuild memory afterward to form fresh dependent impressions.'];
+    await show(ctx, 'Review memory correction', lines.join('\n\n'));
+    if (!await ctx.ui.confirm('Apply reviewed memory correction?', 'Apply exactly the previewed changes and invalidate the listed dependent memory?')) return;
+    await client.request('applyCorrection', { token: preview.token }); lastRecall = undefined;
+    await refresh(ctx); ctx.ui.notify('Correction applied. Rebuild memory to refresh dependent impressions and episodes.', 'info');
+  }
+  async function browseMemory(ctx: ExtensionCommandContext, character: Character, mode: string): Promise<void> {
+    const inspection = await inspectMemory(ctx, character);
+    const item = await chooseEpisode(ctx, inspection, 'Inspect episode memory');
+    if (!item) return;
+    const action = mode === 'correct' ? 'Correct a recollection' : mode === 'impressions' ? 'Broader impressions' : mode === 'sources' ? 'Supporting played source'
+      : await ctx.ui.select(episodeTitle(item.episode, character.name), ['Read recollections', 'Broader impressions', 'Supporting played source', 'Correct a recollection', ...(item.correction ? ['Release correction'] : []), 'Resume episode']);
+    if (action === 'Read recollections') await show(ctx, 'Stored episode memory', episodeText(item));
+    if (action === 'Broader impressions') await show(ctx, 'Broader impressions', impressionsText(item, inspection));
+    if (action === 'Supporting played source') {
+      const contributors = new Set([item.episode.id, ...(item.contribution?.impressions.flatMap(impression => impression.sourceEpisodeIds) ?? [])]);
+      const sourceEpisode = await chooseEpisode(ctx, { ...inspection, episodes: inspection.episodes.filter(item => contributors.has(item.episode.id)) }, 'Supporting episode');
+      if (sourceEpisode) await show(ctx, 'Supporting played source', sourcesText(sourceEpisode, character.name));
+    }
+    if (action === 'Correct a recollection' || action === 'Release correction') await correctMemory(ctx, character, inspection, item, action === 'Release correction');
+    if (action === 'Resume episode') {
+      if (working || !ctx.isIdle()) throw new Error('Wait for the current operation before resuming an episode.');
+      const source = catalog!.source(item.episode.id);
+      if (!source) throw new Error('Use Episode chats to recover this unplayed episode.');
+      if (item.episode.id !== ctx.sessionManager.getSessionId()) await ctx.switchSession(source.path);
+    }
+  }
+  async function eligibleMemory(ctx: ExtensionCommandContext, character: Character, date?: string): Promise<void> {
+    remember(ctx); await service!.reconcile();
+    if (!date && !episode) throw new Error('Set a story date or use /reverie memory eligible YYYY-MM-DD.');
+    const inspection = await service!.client(character.id).request('inspect', date ? { at: date } : { at: episode!.now, activeEpisodeId: episode!.id });
+    const lines = [`All stored recollections chronologically eligible at ${new Date(inspection.at!).toISOString()}.`,
+      'This player view is complete and does not apply recall ranking or detail fading. Explain last recall shows actual reply context.',
+      ...inspection.episodes.filter(item => item.eligible).map(item => `${episodeTitle(item.episode, character.name)}\n${episodeText(item)}`),
+      ...inspection.episodes.filter(item => item.impressionsEligible).map(item => impressionsText(item, inspection))];
+    if (!inspection.episodes.some(item => item.eligible)) lines.push('No published memory is eligible at this point.');
+    await show(ctx, 'Eligible memory · player inspection', lines.join('\n\n'));
+  }
   async function command(args: string, ctx: ExtensionCommandContext): Promise<void> {
     ensure(ctx);
     const [action = 'menu', ...rest] = args.trim().split(/\s+/).filter(Boolean);
@@ -353,7 +435,7 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
       const actions: Record<string, string> = { 'Personality': 'persona', 'Story date': 'when', 'Memorize episode': 'memorize', 'Inspect memory': 'memory', 'Explain last recall': 'explain', 'Enable memory': 'on', 'Disable memory': 'off', 'Link character': 'link', 'Unlink character': 'unlink', 'Delete this chat': 'delete', 'Rebuild memory': 'rebuild', 'Cancel memory operation': 'cancel', 'Create/link character': 'setup', 'Keyboard shortcuts': 'keys' };
       actions['Model for this folder'] = 'model';
       actions['Episode chats'] = 'chats';
-      if (choice) await command(actions[choice]!, ctx); return;
+      if (choice) await command(choice === 'Inspect memory' ? 'memory browse' : actions[choice]!, ctx); return;
     }
     const character = selected(ctx)!;
     if (working && !['cancel', 'memory', 'explain'].includes(action)) throw new Error('Finish or cancel memory formation before changing character settings.');
@@ -393,17 +475,21 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
       await show(ctx, 'Last supplied memory', recalled ? describeRecall(recalled, result!.episodes) : 'No recollections were supplied for the selected reply.'); return;
     }
     if (action === 'memory') {
+      if (rest[0] === 'eligible') { await eligibleMemory(ctx, character, rest.slice(1).join(' ') || undefined); return; }
+      if (['browse', 'correct', 'impressions', 'sources'].includes(rest[0] ?? '')) { await browseMemory(ctx, character, rest[0]!); return; }
       remember(ctx); await service!.reconcile();
       const result = await service!.client(character.id).request('status');
       episode = result.episodes.find(item => item.id === ctx.sessionManager.getSessionId());
-      const lines = [`${result.memories} recollections`, ...result.episodes.map(item => `${item.included ? 'Memorized' : 'Not memorized'} · ${item.label === item.id ? character.name : item.label} · ${new Date(item.start).toISOString()}${item.included && !item.input_hash ? ' · needs rebuild' : ''}`), '', 'Open /reverie chats to resume or delete an episode.'];
+      const inspection = await inspectMemory(ctx, character);
+      const lines = [`${result.memories} recollections`, ...inspection.episodes.map(item => `${stateLabel(item)} · ${item.episode.label === item.episode.id ? character.name : item.episode.label} · ${new Date(item.episode.start).toISOString()}`), '', 'Open /reverie memory browse for full episode memories, impressions, supporting source, corrections and episode navigation. Open /reverie chats to resume or delete an episode.'];
       if (episode?.included && episode.source_hash !== sourceHash(extractSource(ctx.sessionManager.getBranch()))) lines.unshift('Current episode has unmemorized changes.');
       if (episode) {
         const source = extractSource(ctx.sessionManager.getBranch());
         const recall = await service!.client(character.id).request('retrieve', { episodeId: episode.id, at: episode.now,
           cue: source.messages.filter(item => item.role === 'user').map(item => item.text).join('\n').slice(-6000) });
-        lines.push('', 'Available at the selected story point', describeRecall(recall, result.episodes));
+        lines.push('', 'Retrieval sample at the selected story point (limited by cue and budget; not a reply context)', describeRecall(recall, result.episodes));
       } else lines.push('', 'Set a story date to inspect recollections available at that point.');
+      lines.push('', ...inspection.episodes.map(item => `${episodeTitle(item.episode, character.name)}\n${episodeText(item)}`));
       await show(ctx, `Memory for ${character.name}`, lines.join('\n')); status(ctx); return;
     }
     throw new Error('Use /reverie to open character and memory controls.');
@@ -446,7 +532,7 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
   });
   pi.on('context_with_system', async (event, ctx) => {
     const character = selected(ctx, false);
-    const messages = event.messages.filter(message => !(message.role === 'custom' && message.customType === 'reverie.recall'));
+    const messages = event.messages.filter(message => !(message.role === 'custom' && ['reverie.recall', 'reverie.notice'].includes(message.customType)));
     // This also covers continuation paths that bypass the input handler. Pi catches
     // extension exceptions, so explicitly abort instead of relying on a thrown error.
     try { assertFolderModel(ctx); }

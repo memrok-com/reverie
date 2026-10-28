@@ -22,6 +22,10 @@ At request time, the system-context hook supplies the persona and, only when rec
 
 ## Source and alternatives
 
+Player inspection uses a separate native `inspect` operation over complete published contributions, with no cue, ranking limit or model call. The adapter displays stored recollections, impression snapshots and chronological eligibility separately from saved reply-context explanations. Played excerpts are transient source callbacks; inspection never enters dialogue, model context or compaction. Source unavailability preserves the last published contribution while exposing an explicit freshness warning.
+
+The native schema migrates version 1 to version 2 by adding character-scoped correction snapshots. A reviewed correction pins an episode's recollections against its source and preceding-memory fingerprints. Preview/application uses a per-process token, database revision and fresh source check; application atomically replaces the recollections, clears current impressions and invalidates later derivatives. Generated impression rebuilding receives the reviewed recollections. Earlier-source deletion or correction releases dependent snapshots; other source/prefix changes block reuse until explicit release. See the [inspection and correction contract](memory-inspection.md).
+
 Source follows Pi entry identities and parent links through the chosen branch. It includes played user/assistant text and the foundation recorded for that episode, excluding tool results, custom UI entries, injected recall and compaction summaries. Original played entries remain available through compaction. Source hashes detect meaningful changes before native publication.
 
 Reroll navigates to the preceding user message and resubmits it. Alternative cycling navigates to an existing reply and appends a state-only selection anchor, making selection survive restart. No rejected-branch summary is carried into the story. Re-memorization replaces the episode's previous contribution and refreshes dependent later reflections.

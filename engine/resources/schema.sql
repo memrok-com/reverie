@@ -28,4 +28,9 @@
       CREATE TRIGGER IF NOT EXISTS memories_delete AFTER DELETE ON memories BEGIN
         INSERT INTO memory_search(memory_search,rowid,gist,detail,feeling,cues) VALUES('delete',old.id,old.gist,old.detail,old.feeling,old.cues);
       END;
-      PRAGMA user_version=1;
+      CREATE TABLE IF NOT EXISTS corrections (
+        character_id TEXT NOT NULL, episode_id TEXT NOT NULL, data TEXT NOT NULL,
+        PRIMARY KEY(character_id,episode_id),
+        FOREIGN KEY(character_id,episode_id) REFERENCES episodes(character_id,id) ON DELETE CASCADE
+      );
+      PRAGMA user_version=2;

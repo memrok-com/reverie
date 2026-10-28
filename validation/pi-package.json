@@ -2,8 +2,8 @@
   "version": "0.3.0",
   "piVersion": "1.3.0",
   "archive": "dist/memrok-com-reverie-pi-0.3.0.tgz",
-  "bytes": 2092489,
-  "sha256": "fe3b1c88f7044bdd405c7e4f9b3e35daf519fc7c5c8e0bd8a0148d3f5ce3a501",
+  "bytes": 2129416,
+  "sha256": "16e69a1f7e0a6471cd5b1ffe472ac774fef8d5dbb2b274157e11768b56cd3859",
   "files": [
     "CONTROLS.md",
     "LICENSE",

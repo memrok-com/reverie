@@ -38,6 +38,16 @@ pub struct Contribution {
     pub state_hash: String,
 }
 
+/// A reviewed episode snapshot, kept separately from generated contributions.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Correction {
+    pub episode_id: String,
+    pub source_hash: String,
+    pub prefix_hash: String,
+    pub memories: Vec<Memory>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Episode {
     pub id: String,

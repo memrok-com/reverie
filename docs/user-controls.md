@@ -13,7 +13,11 @@ Run `/reverie` or Ctrl+Alt+M to open the character and memory menu.
 | `/reverie when [date] [label]` | Set fictional time, or open date input. A visible confirmation and widget show the result. |
 | `/reverie chats` | List the character's dated episodes and resume or delete one, including unplayed setups. |
 | `/reverie memorize` | Form or replace the episode's contribution from its selected full branch. |
-| `/reverie memory` | Inspect included episodes, source freshness, and recollections available at the current story point, with provenance. |
+| `/reverie memory` | Complete stored recollections and episode states, plus a clearly labeled retrieval sample at the current story point. |
+| `/reverie memory browse` | Select an episode to read every published recollection, inspect broader impressions separately, follow played sources, correct an item, or resume its chat. Also available through **Inspect memory** in the menu. |
+| `/reverie memory impressions` / `sources` | Choose an episode's broader-impression snapshot or supporting played text, with player/companion authorship. |
+| `/reverie memory eligible [date]` | All stored recollections eligible at the active story point, or an explicit date, independently of cue and recall limits. |
+| `/reverie memory correct` | Choose a published recollection, edit its meaning/detail/feeling/source references, and review dependent invalidation before applying. |
 | `/reverie explain` | Show memory supplied for the selected character reply and its sources, including after restart. |
 | `/reverie unmemorize` | Withdraw this episode while keeping its chat. Refresh dependent memory. |
 | `/reverie rebuild` | Re-reflect surviving included episodes using their selected branches. |
@@ -32,5 +36,11 @@ Dated chats with no played turns are saved when you leave or close them, so Pi's
 Commands, UI notices and injected recollections are excluded from played source. Only explicit memorization forms lasting memory. Deletion invalidation is immediate and requires no model; rebuilding later dependent memory does require one.
 
 Empty recall sends no memory text to the model. Actual recollections are provided as private background in the character's system context, never as user dialogue or a fabricated assistant reply. `/reverie explain` still shows exactly which recollections were supplied.
+
+Inspection is for the player. It can show future episodes without supplying them to the character or saving them into played history. Stored detail is shown in full even when it would fade in recall. Eligibility is chronological; it does not mean an item was selected or supplied to a reply. Broader impressions identify contributing episodes; supporting played text retains literal actions and dialogue and identifies who authored each turn. Stale source references are shown as references to the published branch, with current source freshness reported separately.
+
+A published empty contribution, an episode that was never memorized, a stale contribution, and invalidated memory that needs rebuilding have distinct labels. Source unavailability is reported without discarding the published contribution.
+
+Corrections preserve played dialogue and intentional subjectivity. Applying one saves the reviewed episode recollections, clears that episode's impressions, invalidates all later contributions, and releases later correction snapshots that depended on the old memory. The preview lists these changes; no model is needed to apply them. Rebuild afterward to regenerate dependent impressions and episodes. Corrections survive restart, withdrawal/re-memorization, and forced rebuilding while source and earlier memory remain unchanged. If either changes, rebuilding stops until you select **Release correction** in the episode browser and approve its invalidation preview. Releasing removes that episode's contribution and leaves its inclusion choice intact. Existing reply explanations remain historical. See the [correction contract](memory-inspection.md).
 
 After a folder is linked, explicit `/model` selections, model cycling and thinking-level changes are saved for that folder. Reverie restores the provider, model and thinking level for new/resumed sessions, restart and reload. The widget shows the active thinking level, and memory formation uses it too. Pi adjusts unsupported levels to the model's capabilities. Existing model preferences adopt the current thinking level the first time they are loaded after the update. Restoration does not change Pi's global defaults. An unavailable saved model pauses generation and preserves the submitted text; it never silently substitutes another provider. Use `/reverie model` to save the current choice even when it is already selected, or to choose a replacement. Unlinked folders keep Pi's normal model and thinking behavior.

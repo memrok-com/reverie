@@ -370,3 +370,166 @@ test('native disconnect aborts reflection and closes the executable cleanly', as
   assert.equal(f.client.child.exitCode, 0);
   assert.equal(f.rows('memories').length, 0);
 });
+
+test('complete inspection is independent of cue, budgets, fading and fictional eligibility', async t => {
+  const f = fixture(t, { settings: { topK: 1, memoryBudget: 512 }, infer: request => {
+    const value = reflection(request);
+    value.memories = Array.from({ length: 12 }, (_, index) => ({ ...value.memories[0], gist: `Unique recollection ${index}`, detail: `Full stored detail ${index}` }));
+    return value;
+  } });
+  await f.episode('first', '2000-01-01'); await f.request('memorize', { episodeId: 'first' });
+  await f.episode('future', '2020-01-01'); await f.request('memorize', { episodeId: 'future' });
+  const before = await f.request('status'), calls = f.calls.length;
+  const inspection = await f.request('inspect', { activeEpisodeId: 'first', at: '2000-01-01' });
+  assert.equal(inspection.episodes.length, 2);
+  for (const item of inspection.episodes) {
+    assert.equal(item.contribution.memories.length, 12);
+    assert.equal(item.contribution.memories.at(-1).detail, 'Full stored detail 11');
+    assert.equal(item.eligible, false);
+    assert.deepEqual(item.sources.map(message => message.role), ['user', 'assistant']);
+    assert.equal(item.sources[0].id, item.contribution.memories[0].sourceMessageIds[0]);
+    assert.ok(item.sources[0].text.includes('PRIVATE_TRANSCRIPT_MARKER'));
+  }
+  assert.equal(f.calls.length, calls);
+  assert.deepEqual(await f.request('status'), before);
+  assert.equal((await f.request('retrieve', { episodeId: 'first', at: '2000-01-01' })).text, '');
+  const eligible = await f.request('inspect', { at: '2010-01-01' });
+  assert.deepEqual(eligible.episodes.map(item => item.eligible), [true, false]);
+  assert.deepEqual(eligible.episodes.map(item => item.impressionsEligible), [true, false]);
+});
+
+test('inspection distinguishes empty, not memorized, stale, unavailable and invalidated contributions', async t => {
+  const f = fixture(t, { infer: request => request.input.episode.label === 'empty' ? { memories: [], impressions: [] } : reflection(request) });
+  await f.episode('empty', '2000-01-01'); await f.request('memorize', { episodeId: 'empty' });
+  await f.episode('draft', '2001-01-01');
+  await f.episode('later', '2010-01-01'); await f.request('memorize', { episodeId: 'later' });
+  let inspection = await f.request('inspect');
+  assert.deepEqual(inspection.episodes.map(item => item.state), ['empty', 'not-memorized', 'published']);
+  f.sources.get('empty').messages[0].text += ' A new action.';
+  inspection = await f.request('inspect');
+  assert.equal(inspection.episodes[0].state, 'stale');
+  assert.equal(inspection.episodes[2].state, 'stale');
+  f.sources.set('empty', new Error('Temporarily offline'));
+  inspection = await f.request('inspect');
+  assert.equal(inspection.episodes[0].freshness, 'unavailable');
+  assert.match(inspection.episodes[0].sourceError, /Temporarily offline/);
+  await f.request('forget', { episodeId: 'empty' });
+  inspection = await f.request('inspect');
+  assert.equal(inspection.episodes.find(item => item.episode.id === 'later').state, 'invalidated');
+});
+
+async function correctionPreview(f, id, changes = {}, extra = {}) {
+  const inspection = await f.request('inspect');
+  const item = inspection.episodes.find(item => item.episode.id === id);
+  return f.request('previewCorrection', { episodeId: id, revision: inspection.revision, memoryIndex: 0,
+    replacement: { ...item.contribution.memories[0], gist: 'The companion carried the lantern; the player spoke.', ...changes }, ...extra });
+}
+
+test('reviewed correction is atomic, preserves played source and survives restart and forced rebuilding', async t => {
+  const f = fixture(t);
+  await f.episode('first', '2000-01-01'); await f.request('memorize', { episodeId: 'first' });
+  await f.episode('later', '2010-01-01'); await f.request('memorize', { episodeId: 'later' });
+  const source = structuredClone(f.sources.get('first')), original = f.contributions(), calls = f.calls.length;
+  const preview = await correctionPreview(f, 'first', { sourceMessageIds: ['first:assistant'] });
+  assert.deepEqual(preview.affected.map(item => item.episodeId), ['later']);
+  assert.equal(preview.before.impressions.length, 1);
+  assert.deepEqual(f.contributions(), original);
+  await f.request('applyCorrection', { token: preview.token });
+  assert.equal(f.calls.length, calls);
+  assert.deepEqual(f.sources.get('first'), source);
+  assert.equal(f.contributions().length, 1);
+  assert.deepEqual(f.contributions()[0].impressions, []);
+  assert.equal((await f.request('inspect')).episodes[1].state, 'invalidated');
+  assert.equal((await f.request('retrieve', { at: '1999-01-01' })).text, '');
+  assert.equal((await f.request('retrieve', { episodeId: 'first', at: '2000-01-01' })).text, '');
+  await f.restart();
+  await f.request('rebuild');
+  assert.equal(f.contributions()[0].memories[0].gist, preview.after.memories[0].gist);
+  assert.deepEqual(f.contributions()[0].memories[0].sourceMessageIds, ['first:assistant']);
+  assert.equal(f.calls.at(-2).request.input.reviewedRecollections.memories[0].gist, preview.after.memories[0].gist);
+  assert.equal(f.calls.at(-1).request.input.earlierRecollections[0].gist, preview.after.memories[0].gist);
+  const second = await correctionPreview(f, 'first', { detail: 'He, not I, spoke.' });
+  await f.request('applyCorrection', { token: second.token });
+  await f.request('unmemorize', { episodeId: 'first' });
+  await f.request('memorize', { episodeId: 'first' });
+  assert.equal(f.contributions()[0].memories[0].detail, 'He, not I, spoke.');
+  assert.equal(f.contributions()[0].memories[0].feeling, original[0].memories[0].feeling);
+});
+
+test('correction preview rejects stale revisions, changed source, unsupported provenance and cross-character access', async t => {
+  const f = fixture(t);
+  await f.episode('first', '2000-01-01'); await f.request('memorize', { episodeId: 'first' });
+  await assert.rejects(correctionPreview(f, 'first', { sourceMessageIds: ['future:secret'] }), { code: 'INVALID_REFLECTION' });
+  const preview = await correctionPreview(f, 'first');
+  f.sources.get('first').messages[0].text += ' Continued play.';
+  await assert.rejects(f.request('applyCorrection', { token: preview.token }), { code: 'STALE_SOURCE' });
+  await f.request('memorize', { episodeId: 'first' });
+  const next = await correctionPreview(f, 'first');
+  await f.episode('another', '2001-01-01');
+  await assert.rejects(f.request('applyCorrection', { token: next.token }), { code: 'STALE_OPERATION' });
+  const other = fixture(t, { database: f.database, characterId: 'anya' });
+  assert.deepEqual((await other.request('inspect')).episodes, []);
+  await assert.rejects(other.request('inspect', { activeEpisodeId: 'first' }), { code: 'EPISODE_CHARACTER_MISMATCH' });
+  await assert.rejects(other.request('previewCorrection', { episodeId: 'first', revision: 0 }), { code: 'EPISODE_CHARACTER_MISMATCH' });
+  await assert.rejects(other.request('applyCorrection', { token: next.token }), { code: 'STALE_OPERATION' });
+});
+
+test('changed source blocks a durable correction until its release is previewed and applied', async t => {
+  const f = fixture(t);
+  await f.episode('first', '2000-01-01'); await f.request('memorize', { episodeId: 'first' });
+  const preview = await correctionPreview(f, 'first'); await f.request('applyCorrection', { token: preview.token });
+  await f.restart();
+  f.sources.get('first').messages[0].text += ' More play.';
+  await assert.rejects(f.request('rebuild'), { code: 'CORRECTION_SOURCE_CHANGED' });
+  const inspection = await f.request('inspect');
+  assert.equal(inspection.episodes[0].correctionStale, true);
+  const release = await f.request('previewCorrection', { episodeId: 'first', revision: inspection.revision, release: true });
+  assert.ok((await f.request('inspect')).episodes[0].correction);
+  await f.request('applyCorrection', { token: release.token });
+  assert.equal((await f.request('inspect')).episodes[0].state, 'invalidated');
+  await f.request('rebuild');
+  assert.equal((await f.request('inspect')).episodes[0].correction, null);
+});
+
+test('corrections cannot preserve an obsolete prefix after earlier memory changes or deletion', async t => {
+  const f = fixture(t);
+  await f.episode('first', '2000-01-01'); await f.request('memorize', { episodeId: 'first' });
+  await f.episode('later', '2010-01-01'); await f.request('memorize', { episodeId: 'later' });
+  const preview = await correctionPreview(f, 'later'); await f.request('applyCorrection', { token: preview.token });
+  const before = f.contributions();
+  f.sources.get('first').messages[0].text += ' Changed past.';
+  await assert.rejects(f.request('rebuild'), { code: 'CORRECTION_DEPENDENCIES_CHANGED' });
+  assert.deepEqual(f.contributions(), before);
+  await f.request('forget', { episodeId: 'first' });
+  assert.equal((await f.request('inspect')).episodes[0].correction, null);
+  await f.request('rebuild');
+  assert.equal(f.contributions()[0].episodeId, 'later');
+});
+
+test('correcting an adjacent later episode preserves earlier memory at their shared endpoint', async t => {
+  const f = fixture(t);
+  await f.episode('first', '2000-01-01'); await f.request('when', { episodeId: 'first', position: '2010-01-01' });
+  await f.request('memorize', { episodeId: 'first' });
+  await f.episode('later', '2010-01-01'); await f.request('memorize', { episodeId: 'later' });
+  const first = f.contributions()[0];
+  const preview = await correctionPreview(f, 'later'); await f.request('applyCorrection', { token: preview.token });
+  assert.deepEqual(f.contributions()[0], first);
+  assert.equal((await f.request('status')).memories, 2);
+  await f.request('unmemorize', { episodeId: 'later' });
+  const inspection = await f.request('inspect');
+  await assert.rejects(f.request('previewCorrection', { episodeId: 'later', revision: inspection.revision,
+    memoryIndex: 0, replacement: preview.after.memories[0] }), { code: 'INVALID_INPUT' });
+  assert.equal((await f.request('retrieve', { at: '2020-01-01' })).memories.length, 1);
+});
+
+test('v1 databases migrate without changing existing published memory', async t => {
+  const f = fixture(t);
+  await f.episode('first', '2000-01-01'); await f.request('memorize', { episodeId: 'first' });
+  const original = f.contributions(); await f.close();
+  const db = new DatabaseSync(f.database);
+  try { db.exec('DROP TABLE corrections; PRAGMA user_version=1;'); } finally { db.close(); }
+  f.client = f.open();
+  assert.deepEqual((await f.request('inspect')).episodes[0].contribution, original[0]);
+  const preview = await correctionPreview(f, 'first'); await f.request('applyCorrection', { token: preview.token });
+  await f.restart(); assert.ok((await f.request('inspect')).episodes[0].correction);
+});
