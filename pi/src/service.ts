@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { MemoryClient } from './memory-client.js';
-import { Catalog } from './catalog.js';
+import { Catalog, type SourceRecord } from './catalog.js';
 import { readSourceFile } from './source.js';
 import type { ReflectionRequest } from './contracts.js';
 
@@ -15,7 +15,8 @@ export class MemoryService {
   private clients = new Map<string, MemoryClient>();
   private reconciling?: Promise<number>;
   constructor(readonly catalog: Catalog, readonly executable: string,
-    private infer: (request: ReflectionRequest, options: { modelKey: string; signal: AbortSignal }) => Promise<string>) {}
+    private infer: (request: ReflectionRequest, options: { modelKey: string; signal: AbortSignal }) => Promise<string>,
+    private onSourceUnavailable: (source: SourceRecord, error: unknown) => void = () => {}) {}
   client(characterId: string): MemoryClient {
     let client = this.clients.get(characterId);
     if (!client) {
@@ -35,7 +36,7 @@ export class MemoryService {
     if (this.reconciling) return this.reconciling;
     this.reconciling = (async () => {
       let invalidated = 0;
-      for (const source of await this.catalog.missingSources()) {
+      for (const source of await this.catalog.missingSources(this.onSourceUnavailable)) {
         const result = await this.client(source.characterId).request('forget', { episodeId: source.episodeId });
         invalidated += result.invalidatedEpisodes;
         this.catalog.acknowledgeDeletion(source.episodeId);

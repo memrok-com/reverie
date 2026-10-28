@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync, realpathSync } from 'node:fs';
+import { constants, mkdirSync, realpathSync } from 'node:fs';
 import { access } from 'node:fs/promises';
-import { resolve, join } from 'node:path';
+import { resolve, join, dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 
@@ -17,7 +17,8 @@ function directoryKey(cwd: string): string {
 export class Catalog {
   readonly db: DatabaseSync;
   readonly memoryPath: string;
-  constructor(readonly directory: string) {
+  private unavailableSources = new Set<string>();
+  constructor(readonly directory: string, private sourceAccess: typeof access = access) {
     mkdirSync(directory, { recursive: true }); this.memoryPath = join(directory, 'memory.sqlite');
     this.db = new DatabaseSync(join(directory, 'catalog.sqlite'));
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
@@ -81,14 +82,28 @@ export class Catalog {
   recall(replyId: string): unknown { const row = this.db.prepare('SELECT data FROM recalls WHERE replyId=?').get(replyId); return row ? JSON.parse(String(row.data)) : undefined; }
   preference(key: string, fallback: string): string { return String(this.db.prepare('SELECT value FROM preferences WHERE key=?').get(key)?.value ?? fallback); }
   setPreference(key: string, value: string): void { this.db.prepare('INSERT INTO preferences VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, value); }
-  async missingSources(): Promise<SourceRecord[]> {
+  async missingSources(onUnavailable: (source: SourceRecord, error: unknown) => void = () => {}): Promise<SourceRecord[]> {
     const pending: SourceRecord[] = [];
     for (const source of this.sources()) {
       if (source.deleted === 2) continue;
       if (!source.deleted) {
-        try { await access(source.path); }
+        try { await this.sourceAccess(source.path, constants.R_OK); this.unavailableSources.delete(source.episodeId); }
         catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+          let confirmedDeletion = false;
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+            // A disconnected drive or renamed directory also reports ENOENT.
+            // Only a missing file in an accessible parent establishes deletion.
+            try { await this.sourceAccess(dirname(source.path), constants.R_OK); confirmedDeletion = true; }
+            catch { /* Keep the source registered until its directory is accessible. */ }
+          }
+          if (!confirmedDeletion) {
+            if (!this.unavailableSources.has(source.episodeId)) {
+              try { onUnavailable(source, error); this.unavailableSources.add(source.episodeId); }
+              catch { /* Notification failures must neither block reconciliation nor suppress its retry. */ }
+            }
+            continue;
+          }
+          this.unavailableSources.delete(source.episodeId);
           this.tombstone(source.episodeId); source.deleted = 1;
         }
       }
