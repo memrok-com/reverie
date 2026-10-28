@@ -7,7 +7,7 @@ interface Options {
   executable: string; characterId: string; database: string;
   settings?: Record<string, unknown>;
   readSource(id: string, signal: AbortSignal): Promise<SourceObservation>;
-  infer(request: ReflectionRequest, context: { episodeId: string; modelKey: string; signal: AbortSignal }): Promise<string>;
+  infer(request: ReflectionRequest, context: { episodeId: string; modelKey: string; signal: AbortSignal; onProgress(): void }): Promise<string>;
 }
 interface Pending { resolve(value: unknown): void; reject(error: unknown): void; cleanup(): void }
 
@@ -71,8 +71,14 @@ export class MemoryClient {
       let result: unknown;
       if (method === 'source.read') result = await this.options.readSource(params.episodeId, controller.signal);
       else if (method === 'model.reflect' && record(params.request) && typeof params.modelKey === 'string') {
+        let lastProgress = -Infinity;
+        const onProgress = () => {
+          const now = performance.now();
+          if (controller.signal.aborted || this.callbacks.get(id) !== controller || now - lastProgress < 50) return;
+          lastProgress = now; this.send({ callProgress: id });
+        };
         result = await this.options.infer(params.request as unknown as ReflectionRequest,
-          { episodeId: params.episodeId, modelKey: params.modelKey, signal: controller.signal });
+          { episodeId: params.episodeId, modelKey: params.modelKey, signal: controller.signal, onProgress });
       } else throw new ReverieError('UNKNOWN_CALLBACK', 'Unknown memory callback.');
       if (!controller.signal.aborted) this.send({ callId: id, result });
     } catch (error) {

@@ -4,6 +4,8 @@ import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { MemoryClient } from '../.work/pi-test/memory-client.mjs';
 import { nativeEnginePath } from '../scripts/lib/native-toolchain.mjs';
+import { setTimeout as delay } from 'node:timers/promises';
+import { reflection } from './fixtures/subjective.mjs';
 
 function clientFor(t, options = {}) {
   const client = new MemoryClient({ executable: nativeEnginePath(),
@@ -52,4 +54,55 @@ test('an unavailable executable reports a bounded failure rather than hanging sh
     database: resolve('.work/no-memory.sqlite'), readSource: () => {}, infer: () => {} });
   t.after(() => client.close());
   await assert.rejects(client.request('ping'), { code: 'MEMORY_PROCESS_UNAVAILABLE' });
+});
+
+test('active reflection can exceed the inactivity window and publish a complete multi-episode rebuild', async t => {
+  let slow = false;
+  const client = clientFor(t, { settings: { reflectionInactivityMs: 300 }, infer: async (request, { onProgress }) => {
+    if (slow) for (let i = 0; i < 8; i++) { await delay(75); onProgress(); }
+    return reflection(request);
+  } });
+  for (const [id, date] of [['first', '2000-01-01'], ['later', '2010-01-01']]) {
+    await client.request('when', { episodeId: id, position: date, label: id });
+    await client.request('memorize', { episodeId: id });
+  }
+  slow = true;
+  assert.equal((await client.request('rebuild', { force: true })).reflected, 2);
+  assert.equal((await client.request('status')).memories, 2);
+});
+
+test('stalled reflection aborts its callback and atomically retains the previous rebuild despite expired progress', async t => {
+  let stall = false, expiredProgress, aborted = false;
+  const client = clientFor(t, { settings: { reflectionInactivityMs: 250 }, infer: async (request, { onProgress, signal }) => {
+    if (!expiredProgress) expiredProgress = onProgress;
+    if (stall && request.input.episode.label === 'later') {
+      const timer = setInterval(() => expiredProgress(), 40);
+      try { await new Promise((resolve, reject) => signal.addEventListener('abort', () => { aborted = true; reject(signal.reason); }, { once: true })); }
+      finally { clearInterval(timer); }
+    }
+    return reflection(request);
+  } });
+  for (const [id, date] of [['first', '2000-01-01'], ['later', '2010-01-01']]) {
+    await client.request('when', { episodeId: id, position: date, label: id });
+    await client.request('memorize', { episodeId: id });
+  }
+  const before = await client.request('inspect'); stall = true;
+  await assert.rejects(client.request('rebuild', { force: true }), { code: 'CALLBACK_TIMEOUT' });
+  assert.equal(aborted, true);
+  assert.deepEqual(await client.request('inspect'), before);
+  assert.equal((await client.request('status')).operation, null);
+});
+
+test('reflection inactivity policy does not shorten source reads or invalidate memory after restart', async t => {
+  const database = resolve('.work/process-tests', `${randomUUID()}.sqlite`);
+  const readSource = async id => {
+    await delay(300);
+    return { foundation: 'Mara', messages: [{ id: `${id}:u`, role: 'user', text: 'We meet.' }] };
+  };
+  const first = clientFor(t, { database, readSource, settings: { reflectionInactivityMs: 150 } });
+  await first.request('when', { episodeId: 'meeting', position: '2000-01-01' });
+  await first.request('memorize', { episodeId: 'meeting' }); await first.close();
+  const restarted = clientFor(t, { database, readSource, settings: { reflectionInactivityMs: 1000 },
+    infer: async () => { throw new Error('Transport settings must not regenerate memory.'); } });
+  assert.equal((await restarted.request('memorize', { episodeId: 'meeting' })).status, 'current');
 });

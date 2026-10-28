@@ -85,6 +85,9 @@ pub struct Settings {
     pub prior_memory_limit: usize,
     pub reflection_max_tokens: usize,
     pub reflection_attempts: usize,
+    // Transport policy must not invalidate already-published memory inputs.
+    #[serde(skip_serializing)]
+    pub reflection_inactivity_ms: u64,
 }
 
 impl Default for Settings {
@@ -98,6 +101,7 @@ impl Default for Settings {
             prior_memory_limit: 64,
             reflection_max_tokens: 4096,
             reflection_attempts: 3,
+            reflection_inactivity_ms: 600_000,
         }
     }
 }
@@ -114,6 +118,12 @@ impl Settings {
                 )
             })?
             .unwrap_or_default();
+        if !(100..=86_400_000).contains(&settings.reflection_inactivity_ms) {
+            return Err(Error::new(
+                "INVALID_CONFIGURATION",
+                "Reflection inactivity timeout must be between 100 milliseconds and 24 hours.",
+            ));
+        }
         if settings.top_k == 0
             || settings.top_k > 32
             || settings.candidate_limit == 0

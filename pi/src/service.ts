@@ -14,13 +14,29 @@ export function executablePath(packageRoot: string): string {
 export class MemoryService {
   private clients = new Map<string, MemoryClient>();
   private reconciling?: Promise<number>;
+  private configurationWarned = false;
   constructor(readonly catalog: Catalog, readonly executable: string,
-    private infer: (request: ReflectionRequest, options: { modelKey: string; signal: AbortSignal }) => Promise<string>,
-    private onSourceUnavailable: (source: SourceRecord, error: unknown) => void = () => {}) {}
+    private infer: (request: ReflectionRequest, options: { modelKey: string; signal: AbortSignal; onProgress(): void }) => Promise<string>,
+    private onSourceUnavailable: (source: SourceRecord, error: unknown) => void = () => {},
+    private onConfigurationWarning: (message: string) => void = () => {}) {}
   client(characterId: string): MemoryClient {
     let client = this.clients.get(characterId);
     if (!client) {
+      const raw = process.env.REVERIE_REFLECTION_INACTIVITY_SECONDS;
+      const seconds = Number(raw);
+      let settings: Record<string, number> | undefined;
+      if (raw !== undefined) {
+        if (!raw.trim() || !Number.isFinite(seconds) || seconds < 0.1 || seconds > 86400) {
+          if (!this.configurationWarned) {
+            try {
+              this.onConfigurationWarning('Invalid REVERIE_REFLECTION_INACTIVITY_SECONDS. Use a number from 0.1 to 86400 seconds; using the default ten-minute inactivity limit. Correct it and restart Pi.');
+              this.configurationWarned = true;
+            } catch { /* Notification failures do not disable memory. Retry on the next process. */ }
+          }
+        } else settings = { reflectionInactivityMs: Math.round(seconds * 1000) };
+      }
       client = new MemoryClient({ executable: this.executable, characterId, database: this.catalog.memoryPath,
+        ...(settings ? { settings } : {}),
         readSource: async (id, signal) => {
           signal.throwIfAborted();
           const source = this.catalog.source(id);
