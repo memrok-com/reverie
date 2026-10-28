@@ -1,30 +1,30 @@
 <?xml version="1.0" encoding="utf-8"?>
 <testsuites>
-	<testcase name="catalogs created before thinking preferences retain their saved model during migration" time="0.060820" classname="test" file="test/pi/catalog.test.mjs"/>
-	<testcase name="real Pi input cancellation preserves an opening; persona, reroll, cycle, memory and restart work together" time="0.425746" classname="test" file="test/pi/integration.test.mjs"/>
-	<testcase name="story dates can be corrected repeatedly before play and stay fixed after play, restart and rewind" time="0.356056" classname="test" file="test/pi/integration.test.mjs"/>
-	<testcase name="leaving a dated unplayed chat saves it for Pi resume and episode chat navigation without inventing turns" time="0.534702" classname="test" file="test/pi/integration.test.mjs"/>
-	<testcase name="quitting saves date-only chats and deleting the resumed setup removes it without a model call" time="0.451251" classname="test" file="test/pi/integration.test.mjs"/>
-	<testcase name="episode chats can delete an inactive unmemorized conversation without replacing the current chat" time="0.359792" classname="test" file="test/pi/integration.test.mjs"/>
-	<testcase name="legacy date-only episodes can be recovered or deleted from episode chats" time="0.469626" classname="test" file="test/pi/integration.test.mjs"/>
-	<testcase name="empty recall adds no model-visible notice or synthetic dialogue, including rerolls and resumed legacy entries" time="0.368480" classname="test" file="test/pi/integration.test.mjs"/>
-	<testcase name="actual recollections are private system context, refreshed once per request and removed when memory is off" time="0.466295" classname="test" file="test/pi/integration.test.mjs"/>
-	<testcase name="reroll retries a first error response without requiring a completed reply or duplicating the opening" time="0.265669" classname="test" file="test/pi/integration.test.mjs"/>
-	<testcase name="reroll retries a first aborted response without requiring a completed reply or duplicating the opening" time="0.248729" classname="test" file="test/pi/integration.test.mjs"/>
-	<testcase name="reroll handles a pending user-only leaf and refuses an empty chat" time="0.205289" classname="test" file="test/pi/integration.test.mjs"/>
-	<testcase name="a character folder restores its model and thinking level across new, resumed and reloaded sessions" time="0.844609" classname="test" file="test/pi/integration.test.mjs"/>
-	<testcase name="restoring thinking respects model capabilities and adopts legacy preferences without changing the model" time="0.371501" classname="test" file="test/pi/integration.test.mjs"/>
-	<testcase name="an unavailable saved folder model blocks fallback generation and the folder model picker can repair the choice" time="0.310151" classname="test" file="test/pi/integration.test.mjs"/>
-	<testcase name="external Pi session deletion invalidates native memory before subsequent recall" time="0.337202" classname="test" file="test/pi/integration.test.mjs"/>
-	<testcase name="integrated deletion replaces the active Pi runtime and removes the chat without losing its folder link" time="0.350427" classname="test" file="test/pi/integration.test.mjs"/>
-	<testcase name="memory off keeps persona without recall; relinking cannot change an existing chat owner" time="0.212419" classname="test" file="test/pi/integration.test.mjs"/>
-	<testcase name="tree navigation restores fictional time and prevents rejected-branch summaries from entering roleplay" time="0.210418" classname="test" file="test/pi/integration.test.mjs"/>
-	<testcase name="memory cancellation remains available and switching Pi sessions does not leave an orphan process" time="0.331630" classname="test" file="test/pi/integration.test.mjs"/>
-	<testcase name="edited Pi prompts reroll the edited text and memory inspection exposes eligible recollections and provenance" time="0.454612" classname="test" file="test/pi/integration.test.mjs"/>
-	<testcase name="episode browser shows full future memory and attributed source without supplying it to earlier play" time="0.368786" classname="test" file="test/pi/integration.test.mjs"/>
-	<testcase name="Pi correction editor previews dependents, respects cancel and persists the applied correction" time="0.603056" classname="test" file="test/pi/integration.test.mjs"/>
-	<testcase name="Pi source preserves the selected full story across alternatives and compaction" time="0.003114" classname="test" file="test/pi/source.test.mjs"/>
-	<testcase name="Pi append-only message edits and omissions apply to memory and reroll prompts" time="0.000400" classname="test" file="test/pi/source.test.mjs"/>
+	<testcase name="catalogs created before thinking preferences retain their saved model during migration" time="0.052182" classname="test" file="test/pi/catalog.test.mjs"/>
+	<testcase name="real Pi input cancellation preserves an opening; persona, reroll, cycle, memory and restart work together" time="0.381659" classname="test" file="test/pi/integration.test.mjs"/>
+	<testcase name="story dates can be corrected repeatedly before play and stay fixed after play, restart and rewind" time="0.328093" classname="test" file="test/pi/integration.test.mjs"/>
+	<testcase name="leaving a dated unplayed chat saves it for Pi resume and episode chat navigation without inventing turns" time="0.471822" classname="test" file="test/pi/integration.test.mjs"/>
+	<testcase name="quitting saves date-only chats and deleting the resumed setup removes it without a model call" time="0.409197" classname="test" file="test/pi/integration.test.mjs"/>
+	<testcase name="episode chats can delete an inactive unmemorized conversation without replacing the current chat" time="0.335150" classname="test" file="test/pi/integration.test.mjs"/>
+	<testcase name="legacy date-only episodes can be recovered or deleted from episode chats" time="0.480434" classname="test" file="test/pi/integration.test.mjs"/>
+	<testcase name="empty recall adds no model-visible notice or synthetic dialogue, including rerolls and resumed legacy entries" time="0.346147" classname="test" file="test/pi/integration.test.mjs"/>
+	<testcase name="actual recollections are private system context, refreshed once per request and removed when memory is off" time="0.384445" classname="test" file="test/pi/integration.test.mjs"/>
+	<testcase name="reroll retries a first error response without requiring a completed reply or duplicating the opening" time="0.241081" classname="test" file="test/pi/integration.test.mjs"/>
+	<testcase name="reroll retries a first aborted response without requiring a completed reply or duplicating the opening" time="0.235080" classname="test" file="test/pi/integration.test.mjs"/>
+	<testcase name="reroll handles a pending user-only leaf and refuses an empty chat" time="0.194638" classname="test" file="test/pi/integration.test.mjs"/>
+	<testcase name="a character folder restores its model and thinking level across new, resumed and reloaded sessions" time="0.813812" classname="test" file="test/pi/integration.test.mjs"/>
+	<testcase name="restoring thinking respects model capabilities and adopts legacy preferences without changing the model" time="0.402095" classname="test" file="test/pi/integration.test.mjs"/>
+	<testcase name="an unavailable saved folder model blocks fallback generation and the folder model picker can repair the choice" time="0.313570" classname="test" file="test/pi/integration.test.mjs"/>
+	<testcase name="external Pi session deletion invalidates native memory before subsequent recall" time="0.343873" classname="test" file="test/pi/integration.test.mjs"/>
+	<testcase name="integrated deletion replaces the active Pi runtime and removes the chat without losing its folder link" time="0.359395" classname="test" file="test/pi/integration.test.mjs"/>
+	<testcase name="memory off keeps persona without recall; relinking cannot change an existing chat owner" time="0.227068" classname="test" file="test/pi/integration.test.mjs"/>
+	<testcase name="tree navigation restores fictional time and prevents rejected-branch summaries from entering roleplay" time="0.228227" classname="test" file="test/pi/integration.test.mjs"/>
+	<testcase name="memory cancellation remains available and switching Pi sessions does not leave an orphan process" time="0.364583" classname="test" file="test/pi/integration.test.mjs"/>
+	<testcase name="edited Pi prompts reroll the edited text and memory inspection exposes eligible recollections and provenance" time="0.462929" classname="test" file="test/pi/integration.test.mjs"/>
+	<testcase name="episode browser shows full future memory and attributed source without supplying it to earlier play" time="0.371810" classname="test" file="test/pi/integration.test.mjs"/>
+	<testcase name="Pi correction editor previews dependents, respects cancel and persists the applied correction" time="0.635386" classname="test" file="test/pi/integration.test.mjs"/>
+	<testcase name="Pi source preserves the selected full story across alternatives and compaction" time="0.003259" classname="test" file="test/pi/source.test.mjs"/>
+	<testcase name="Pi append-only message edits and omissions apply to memory and reroll prompts" time="0.000351" classname="test" file="test/pi/source.test.mjs"/>
 	<!-- tests 25 -->
 	<!-- suites 0 -->
 	<!-- pass 25 -->
@@ -32,5 +32,5 @@
 	<!-- cancelled 0 -->
 	<!-- skipped 0 -->
 	<!-- todo 0 -->
-	<!-- duration_ms 10115.3092 -->
+	<!-- duration_ms 16791.1202 -->
 </testsuites>

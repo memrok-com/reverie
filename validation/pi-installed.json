@@ -1,5 +1,5 @@
 {
-  "version": "0.3.0",
+  "build": "Untagged development build before the v0.1.0 baseline",
   "piVersion": "1.3.0",
   "checks": [
     "Existing user Pi installation discovers registered Reverie package",

@@ -1,6 +1,6 @@
 # Pi migration
 
-Reverie 0.3.0 replaces the DSH host with a Pi 1.3.0 extension while retaining the Rust memory engine. The acceptance items below are implemented and verified on Windows x64.
+Reverie 0.1.0 replaces the DSH host with a Pi 1.3.0 extension while retaining the Rust memory engine. The acceptance items below are implemented and verified on Windows x64.
 
 ## Acceptance
 

@@ -1,6 +1,6 @@
 # Decisions
 
-## Selected for 0.3.0
+## Selected for 0.1.0
 
 | Area | Decision |
 | --- | --- |

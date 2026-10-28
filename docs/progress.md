@@ -1,6 +1,6 @@
 # Progress
 
-Reverie 0.3.0 replaces the DSH integration with a Pi 1.3.0 extension. The native Rust engine remains the production memory implementation.
+Reverie 0.1.0 replaces the DSH integration with a Pi 1.3.0 extension. The native Rust engine remains the production memory implementation.
 
 Implemented: opt-in folder/character associations, terminal persona editing, memory on/off and unlinking, visible dates and memory state, draft-preserving date input, reroll/cycle shortcuts, selected-branch source reconstruction, memorization/inspection/explanation, withdrawal/rebuild/cancellation, integrated deletion, and reconciliation of externally deleted session files.
 

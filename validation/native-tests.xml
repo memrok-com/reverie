@@ -1,40 +1,40 @@
 <?xml version="1.0" encoding="utf-8"?>
 <testsuites>
-	<testcase name="deletion immediately removes later derivatives without inference and preserves earlier memory and inclusion choices" time="0.237111" classname="test" file="test/native/deletion.test.mjs"/>
-	<testcase name="an in-flight reflection cannot republish data after source deletion" time="0.115332" classname="test" file="test/native/deletion.test.mjs"/>
-	<testcase name="native episode ownership protects placement, retrieval and source access across characters" time="0.218812" classname="test" file="test/native/memory.test.mjs"/>
-	<testcase name="native competing processes cannot claim the same conversation for different characters" time="0.123877" classname="test" file="test/native/memory.test.mjs"/>
-	<testcase name="native memory persists after restart without a duplicate transcript archive" time="0.102437" classname="test" file="test/native/memory.test.mjs"/>
-	<testcase name="native origin and earlier points exclude later interpretations as well as events" time="0.074648" classname="test" file="test/native/memory.test.mjs"/>
-	<testcase name="native retroactive earlier play rebuilds later contributions in canonical order" time="0.073474" classname="test" file="test/native/memory.test.mjs"/>
-	<testcase name="native continued play replaces once, while unchanged memorization calls no model" time="0.075007" classname="test" file="test/native/memory.test.mjs"/>
-	<testcase name="native source edits refresh dependent later reflection" time="0.072004" classname="test" file="test/native/memory.test.mjs"/>
-	<testcase name="native withdrawal preserves source and stays excluded from rebuilding" time="0.081113" classname="test" file="test/native/memory.test.mjs"/>
-	<testcase name="native explicit deletion differs from temporarily unavailable source" time="0.071532" classname="test" file="test/native/memory.test.mjs"/>
-	<testcase name="native model failure retains the last published state and inclusion" time="0.072288" classname="test" file="test/native/memory.test.mjs"/>
-	<testcase name="native source revision changes during inference reject stale replacement" time="0.068380" classname="test" file="test/native/memory.test.mjs"/>
-	<testcase name="native cancellation and busy checks preserve memory while recall remains available" time="0.094129" classname="test" file="test/native/memory.test.mjs"/>
-	<testcase name="native date corrections replace both endpoints, persist and still enforce valid episode slots" time="0.102790" classname="test" file="test/native/memory.test.mjs"/>
-	<testcase name="native time changes enforce episode slots and invalidate in-flight work" time="0.067563" classname="test" file="test/native/memory.test.mjs"/>
-	<testcase name="native processes sharing a database isolate characters across reflection and recall" time="0.103521" classname="test" file="test/native/memory.test.mjs"/>
-	<testcase name="native temporal projection fades detail while preserving gist, emotion and years" time="0.061957" classname="test" file="test/native/memory.test.mjs"/>
-	<testcase name="native malformed output and unsupported citations fail without publication" time="0.059670" classname="test" file="test/native/memory.test.mjs"/>
-	<testcase name="native bounded correction resolves short references to canonical source identities" time="0.062268" classname="test" file="test/native/memory.test.mjs"/>
-	<testcase name="native cue retrieval finds low-salience memory without reflection" time="0.113947" classname="test" file="test/native/memory.test.mjs"/>
-	<testcase name="native adjacent episode boundaries do not leak later experience into continued earlier play" time="0.070056" classname="test" file="test/native/memory.test.mjs"/>
-	<testcase name="native cancellation immediately after queuing cannot miss the operation" time="0.059539" classname="test" file="test/native/memory.test.mjs"/>
-	<testcase name="native disconnect aborts reflection and closes the executable cleanly" time="0.063001" classname="test" file="test/native/memory.test.mjs"/>
-	<testcase name="complete inspection is independent of cue, budgets, fading and fictional eligibility" time="0.070984" classname="test" file="test/native/memory.test.mjs"/>
-	<testcase name="inspection distinguishes empty, not memorized, stale, unavailable and invalidated contributions" time="0.071340" classname="test" file="test/native/memory.test.mjs"/>
-	<testcase name="reviewed correction is atomic, preserves played source and survives restart and forced rebuilding" time="0.127726" classname="test" file="test/native/memory.test.mjs"/>
-	<testcase name="correction preview rejects stale revisions, changed source, unsupported provenance and cross-character access" time="0.100307" classname="test" file="test/native/memory.test.mjs"/>
-	<testcase name="changed source blocks a durable correction until its release is previewed and applied" time="0.101544" classname="test" file="test/native/memory.test.mjs"/>
-	<testcase name="corrections cannot preserve an obsolete prefix after earlier memory changes or deletion" time="0.079004" classname="test" file="test/native/memory.test.mjs"/>
-	<testcase name="correcting an adjacent later episode preserves earlier memory at their shared endpoint" time="0.078530" classname="test" file="test/native/memory.test.mjs"/>
-	<testcase name="v1 databases migrate without changing existing published memory" time="0.135912" classname="test" file="test/native/memory.test.mjs"/>
-	<testcase name="a separate memory process calls back for source and inference and serves retrieval locally" time="0.210659" classname="test" file="test/process.test.mjs"/>
-	<testcase name="cancellation crosses the process interface and aborts the model callback" time="0.130778" classname="test" file="test/process.test.mjs"/>
-	<testcase name="an unavailable executable reports a bounded failure rather than hanging shutdown" time="0.002355" classname="test" file="test/process.test.mjs"/>
+	<testcase name="deletion immediately removes later derivatives without inference and preserves earlier memory and inclusion choices" time="0.244387" classname="test" file="test/native/deletion.test.mjs"/>
+	<testcase name="an in-flight reflection cannot republish data after source deletion" time="0.108029" classname="test" file="test/native/deletion.test.mjs"/>
+	<testcase name="native episode ownership protects placement, retrieval and source access across characters" time="0.221051" classname="test" file="test/native/memory.test.mjs"/>
+	<testcase name="native competing processes cannot claim the same conversation for different characters" time="0.138249" classname="test" file="test/native/memory.test.mjs"/>
+	<testcase name="native memory persists after restart without a duplicate transcript archive" time="0.105403" classname="test" file="test/native/memory.test.mjs"/>
+	<testcase name="native origin and earlier points exclude later interpretations as well as events" time="0.070648" classname="test" file="test/native/memory.test.mjs"/>
+	<testcase name="native retroactive earlier play rebuilds later contributions in canonical order" time="0.074793" classname="test" file="test/native/memory.test.mjs"/>
+	<testcase name="native continued play replaces once, while unchanged memorization calls no model" time="0.074291" classname="test" file="test/native/memory.test.mjs"/>
+	<testcase name="native source edits refresh dependent later reflection" time="0.067615" classname="test" file="test/native/memory.test.mjs"/>
+	<testcase name="native withdrawal preserves source and stays excluded from rebuilding" time="0.084054" classname="test" file="test/native/memory.test.mjs"/>
+	<testcase name="native explicit deletion differs from temporarily unavailable source" time="0.074625" classname="test" file="test/native/memory.test.mjs"/>
+	<testcase name="native model failure retains the last published state and inclusion" time="0.070866" classname="test" file="test/native/memory.test.mjs"/>
+	<testcase name="native source revision changes during inference reject stale replacement" time="0.069261" classname="test" file="test/native/memory.test.mjs"/>
+	<testcase name="native cancellation and busy checks preserve memory while recall remains available" time="0.094778" classname="test" file="test/native/memory.test.mjs"/>
+	<testcase name="native date corrections replace both endpoints, persist and still enforce valid episode slots" time="0.092192" classname="test" file="test/native/memory.test.mjs"/>
+	<testcase name="native time changes enforce episode slots and invalidate in-flight work" time="0.066249" classname="test" file="test/native/memory.test.mjs"/>
+	<testcase name="native processes sharing a database isolate characters across reflection and recall" time="0.103577" classname="test" file="test/native/memory.test.mjs"/>
+	<testcase name="native temporal projection fades detail while preserving gist, emotion and years" time="0.060823" classname="test" file="test/native/memory.test.mjs"/>
+	<testcase name="native malformed output and unsupported citations fail without publication" time="0.058647" classname="test" file="test/native/memory.test.mjs"/>
+	<testcase name="native bounded correction resolves short references to canonical source identities" time="0.061550" classname="test" file="test/native/memory.test.mjs"/>
+	<testcase name="native cue retrieval finds low-salience memory without reflection" time="0.124479" classname="test" file="test/native/memory.test.mjs"/>
+	<testcase name="native adjacent episode boundaries do not leak later experience into continued earlier play" time="0.068223" classname="test" file="test/native/memory.test.mjs"/>
+	<testcase name="native cancellation immediately after queuing cannot miss the operation" time="0.057635" classname="test" file="test/native/memory.test.mjs"/>
+	<testcase name="native disconnect aborts reflection and closes the executable cleanly" time="0.060397" classname="test" file="test/native/memory.test.mjs"/>
+	<testcase name="complete inspection is independent of cue, budgets, fading and fictional eligibility" time="0.069440" classname="test" file="test/native/memory.test.mjs"/>
+	<testcase name="inspection distinguishes empty, not memorized, stale, unavailable and invalidated contributions" time="0.071281" classname="test" file="test/native/memory.test.mjs"/>
+	<testcase name="reviewed correction is atomic, preserves played source and survives restart and forced rebuilding" time="0.125208" classname="test" file="test/native/memory.test.mjs"/>
+	<testcase name="correction preview rejects stale revisions, changed source, unsupported provenance and cross-character access" time="0.098418" classname="test" file="test/native/memory.test.mjs"/>
+	<testcase name="changed source blocks a durable correction until its release is previewed and applied" time="0.095489" classname="test" file="test/native/memory.test.mjs"/>
+	<testcase name="corrections cannot preserve an obsolete prefix after earlier memory changes or deletion" time="0.081111" classname="test" file="test/native/memory.test.mjs"/>
+	<testcase name="correcting an adjacent later episode preserves earlier memory at their shared endpoint" time="0.080862" classname="test" file="test/native/memory.test.mjs"/>
+	<testcase name="v1 databases migrate without changing existing published memory" time="0.132421" classname="test" file="test/native/memory.test.mjs"/>
+	<testcase name="a separate memory process calls back for source and inference and serves retrieval locally" time="0.216551" classname="test" file="test/process.test.mjs"/>
+	<testcase name="cancellation crosses the process interface and aborts the model callback" time="0.135323" classname="test" file="test/process.test.mjs"/>
+	<testcase name="an unavailable executable reports a bounded failure rather than hanging shutdown" time="0.002452" classname="test" file="test/process.test.mjs"/>
 	<!-- tests 35 -->
 	<!-- suites 0 -->
 	<!-- pass 35 -->
@@ -42,5 +42,5 @@
 	<!-- cancelled 0 -->
 	<!-- skipped 0 -->
 	<!-- todo 0 -->
-	<!-- duration_ms 2743.6241 -->
+	<!-- duration_ms 2739.3675 -->
 </testsuites>

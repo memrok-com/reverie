@@ -12,7 +12,8 @@ fn run() -> Result<()> {
     }
     if args.is_empty() || args.iter().any(|arg| arg == "--help" || arg == "--version") {
         println!(
-            "Reverie 0.3.0 native memory engine\nConfigure and use Reverie through its Pi extension.\nAdapter connection: --stdio --character NAME --database PATH [--settings JSON]"
+            "Reverie {} native memory engine\nConfigure and use Reverie through its Pi extension.\nAdapter connection: --stdio --character NAME --database PATH [--settings JSON]",
+            env!("CARGO_PKG_VERSION")
         );
         return Ok(());
     }

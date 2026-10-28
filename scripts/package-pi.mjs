@@ -2,7 +2,7 @@ import { readFile, writeFile, stat } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-const root = resolve(import.meta.dirname, '..'), directory = resolve(root, 'dist/reverie-pi');
+const root = resolve(import.meta.dirname, '..'), directory = resolve(root, process.env.REVERIE_PACKAGE_DIR ?? 'dist/reverie-pi');
 const manifest = JSON.parse(await readFile(resolve(directory, 'manifest.json'), 'utf8'));
 for (const [name, expected] of Object.entries(manifest.files)) {
   if (createHash('sha256').update(await readFile(resolve(directory, name))).digest('hex') !== expected.sha256) throw new Error('Release content changed after build: ' + name);

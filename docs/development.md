@@ -55,4 +55,6 @@ Committed validation reports use repository-relative paths. The test runners nor
 
 The release directory is `dist/reverie-pi`. Test installation with `pi install` using that directory, or load it once with `pi -e`. Test homes must stay under `.work/` and must never overwrite a user's Pi settings or memories.
 
+If a running Pi holds the packaged engine open on Windows, set `REVERIE_PACKAGE_DIR` to a fresh directory such as `dist/reverie-pi-0.1.0` for the build, package and memory-wire smoke commands. This builds and validates a separate package without interrupting the active session. The relocated archive smoke reads the generated package report and needs no directory override.
+
 `test/support/reflection.mjs` is a retained golden-format oracle for native prompt/source parity. It is test-only, not a second production memory engine.

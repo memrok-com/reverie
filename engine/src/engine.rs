@@ -139,7 +139,7 @@ impl Reverie {
         self.validate_params(&params)?;
         match method {
             "ping" => Ok(
-                json!({"version":"0.3.0", "characterId":self.character_id, "protocol":1, "runtime":"rust"}),
+                json!({"version":env!("CARGO_PKG_VERSION"), "characterId":self.character_id, "protocol":1, "runtime":"rust"}),
             ),
             "when" => self.when(&params),
             "status" => self.status(),

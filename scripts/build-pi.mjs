@@ -11,7 +11,7 @@ for (const args of [['scripts/cargo.mjs', 'build', '--release', '--locked'], ['n
   const result = spawnSync(process.execPath, args, { cwd: root, stdio: 'inherit', windowsHide: true });
   if (result.status !== 0) throw result.error ?? new Error('Build validation failed.');
 }
-const directory = resolve(root, 'dist/reverie-pi');
+const directory = resolve(root, process.env.REVERIE_PACKAGE_DIR ?? 'dist/reverie-pi');
 for (const folder of ['lib', 'bin/win32-x64']) await mkdir(resolve(directory, folder), { recursive: true });
 await build({ entryPoints: ['pi/src/extension.ts'], outfile: resolve(directory, 'lib/extension.js'), bundle: true, platform: 'node', format: 'esm', target: 'node24', external: ['@earendil-works/pi-tui'] });
 const engineSource = resolve(root, 'engine/target/x86_64-pc-windows-gnu/release/reverie-engine.exe');

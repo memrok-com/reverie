@@ -2,7 +2,7 @@
 // Only an isolated home, authored fixture and credential-free loopback server are used.
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -36,7 +36,7 @@ const baseUrl = `http://127.0.0.1:${server.address().port}/v1`;
 await writeFile(join(agentDir, 'models.json'), JSON.stringify({ providers: { fixture: { api: 'openai-completions', baseUrl,
   apiKey: 'local-fixture', models: [{ id: 'fixture', reasoning: false, contextWindow: 64000, maxTokens: 4096 }] } } }));
 await writeFile(join(agentDir, 'settings.json'), JSON.stringify({ compaction: { enabled: false }, cacheWarming: { mode: 'off' }, telemetry: { enabled: false } }));
-const packageDir = resolve('dist/reverie-pi');
+const packageDir = resolve(process.env.REVERIE_PACKAGE_DIR ?? 'dist/reverie-pi');
 const observer = new MemoryClient({ executable: executablePath(packageDir), characterId: character.id, database: join(home, 'memory.sqlite'),
   readSource: async () => { throw new Error('Observer never reads source.'); }, infer: async () => { throw new Error('Observer never infers.'); } });
 const rpc = new RpcClient({ cliPath: process.argv[2] ?? resolve('node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js'), cwd,
@@ -66,7 +66,7 @@ try {
   await rpc.prompt('/reverie off'); await play('Stay here with me.');
   assert.doesNotMatch(chatRequests[2].messages[0].content, /Private character memory|I remember The lighthouse/);
   assert.doesNotMatch(rpc.getStderr(), /Failed to load|Cannot find/);
-  await writeFile('validation/pi-memory-wire.json', JSON.stringify({ version: '0.3.0', piVersion: '1.3.0',
+  await writeFile('validation/pi-memory-wire.json', JSON.stringify({ version: JSON.parse(await readFile(join(packageDir, 'package.json'), 'utf8')).version, piVersion: '1.3.0',
     checks: ['Real Pi CLI and packaged extension generate through an OpenAI-compatible HTTP fixture',
       'Empty recall sends only system persona and real user dialogue', 'Nonempty recall is sent in the system role',
       'Latest user message stays last and unchanged', 'Memory off removes private recall context'],
