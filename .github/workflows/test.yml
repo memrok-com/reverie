@@ -25,3 +25,6 @@ jobs:
       - run: npm ci
       - name: Typecheck, Rust unit tests, native process tests and Pi integration
         run: npm test
+      - name: Show test reports after a failure
+        if: failure()
+        run: cat validation/*-tests.xml
