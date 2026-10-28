@@ -41,6 +41,7 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
   let originalTools: string[] | undefined, episode: Episode | undefined, lastRecall: Recall | undefined;
   let draftFromShortcut: string | undefined, currentCharacterId: string | undefined;
   let restoringModel = false, modelIssue: string | undefined;
+  let activeCommands = 0;
   const dataHome = options.home ?? join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), '.pi', 'agent'), 'reverie');
   const keys: Record<Action, string> = { ...DEFAULT_KEYS };
   // Shortcuts must exist before Pi wires the editor. Read preferences without keeping factory resources open.
@@ -280,14 +281,27 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
     if (action === 'memorize' && !source.messages.length) throw new Error('Play an episode before memorizing it.');
     await restoreFolderModel(ctx);
     const modelKey = route(ctx), client = service!.client(character.id);
+    const episodeId = ctx.sessionManager.getSessionId();
     working = true; status(ctx);
     // Commands return immediately so Cancel remains usable while reflection calls the model.
-    void client.request(action, { episodeId: ctx.sessionManager.getSessionId(), modelKey, ...(action === 'rebuild' ? { force: false } : {}) }).then(result => {
-      ctx.ui.notify(result.status === 'current' ? 'Memory is already current.' : `Memory updated: ${result.includedEpisodes} included episodes.`, 'info');
-    }).catch(error => ctx.ui.notify(errorMessage(error), 'error')).finally(async () => {
-      working = false;
-      try { if (context) await refresh(context); } catch (error) { ctx.ui.notify(errorMessage(error), 'error'); }
-    });
+    void (async () => {
+      let saved = false;
+      try {
+        const result = await client.request(action, { episodeId, modelKey, ...(action === 'rebuild' ? { force: false } : {}) }); saved = true;
+        ctx.ui.notify(result.status === 'current' ? 'Memory is already current.' : `Memory updated: ${result.includedEpisodes} included episodes.`, 'info');
+      } catch (error) { ctx.ui.notify(errorMessage(error), 'error'); }
+      finally {
+        working = false;
+        try { if (context) await refresh(context); } catch (error) { ctx.ui.notify(errorMessage(error), 'error'); }
+      }
+      if (saved && action === 'memorize') {
+        ctx.ui.notify(`Review saved recollections, impressions, sources and corrections: /reverie memory episode ${episodeId}`, 'info');
+        if (!activeCommands && context?.sessionManager.getSessionId() === episodeId && selected(context, false)?.id === character.id && context.isIdle()) {
+          try { await reviewEpisode(ctx, character, episodeId); }
+          catch (error) { ctx.ui.notify(`Memory was saved, but review could not open. ${errorMessage(error)}`, 'warning'); }
+        }
+      }
+    })();
   }
   async function deleteChat(ctx: ExtensionCommandContext, character: Character, id: string): Promise<void> {
     if (working || !ctx.isIdle()) throw new Error('Finish or cancel the current operation before deleting a chat.');
@@ -385,9 +399,18 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
     await client.request('applyCorrection', { token: preview.token }); lastRecall = undefined;
     await refresh(ctx); ctx.ui.notify('Correction applied. Rebuild memory to refresh dependent impressions and episodes.', 'info');
   }
-  async function browseMemory(ctx: ExtensionCommandContext, character: Character, mode: string): Promise<void> {
+  async function reviewEpisode(ctx: ExtensionCommandContext, character: Character, id: string): Promise<void> {
     const inspection = await inspectMemory(ctx, character);
-    const item = await chooseEpisode(ctx, inspection, 'Inspect episode memory');
+    if (activeCommands || context?.sessionManager.getSessionId() !== id || selected(context, false)?.id !== character.id || !context.isIdle()) return;
+    const item = inspection.episodes.find(item => item.episode.id === id);
+    if (!item) throw new Error('No dated episode with that ID exists for this character. Set a story date or choose an episode from /reverie chats.');
+    await show(ctx, 'Published episode review', [episodeTitle(item.episode, character.name), episodeText(item), impressionsText(item, inspection),
+      `Sources and corrections: /reverie memory episode ${id}`].join('\n\n'));
+  }
+  async function browseMemory(ctx: ExtensionCommandContext, character: Character, mode: string, id?: string): Promise<void> {
+    const inspection = await inspectMemory(ctx, character);
+    const item = id ? inspection.episodes.find(item => item.episode.id === id) : await chooseEpisode(ctx, inspection, 'Inspect episode memory');
+    if (id && !item) throw new Error('No dated episode with that ID exists for this character. Set a story date or choose an episode from /reverie chats.');
     if (!item) return;
     const action = mode === 'correct' ? 'Correct a recollection' : mode === 'impressions' ? 'Broader impressions' : mode === 'sources' ? 'Supporting played source'
       : await ctx.ui.select(episodeTitle(item.episode, character.name), ['Read recollections', 'Broader impressions', 'Supporting played source', 'Correct a recollection', ...(item.correction ? ['Release correction'] : []), 'Resume episode']);
@@ -475,6 +498,7 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
       await show(ctx, 'Last supplied memory', recalled ? describeRecall(recalled, result!.episodes) : 'No recollections were supplied for the selected reply.'); return;
     }
     if (action === 'memory') {
+      if (rest[0] === 'episode') { await browseMemory(ctx, character, 'browse', rest[1] ?? ctx.sessionManager.getSessionId()); return; }
       if (rest[0] === 'eligible') { await eligibleMemory(ctx, character, rest.slice(1).join(' ') || undefined); return; }
       if (['browse', 'correct', 'impressions', 'sources'].includes(rest[0] ?? '')) { await browseMemory(ctx, character, rest[0]!); return; }
       remember(ctx); await service!.reconcile();
@@ -495,8 +519,9 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
     throw new Error('Use /reverie to open character and memory controls.');
   }
   pi.registerCommand('reverie', { description: 'Character, personality, story date, memory, reply alternatives and deletion', handler: async (args, ctx) => {
+    activeCommands++;
     try { await command(args, ctx); } catch (error) { ctx.ui.notify(errorMessage(error), 'error'); }
-    finally { draftFromShortcut = undefined; }
+    finally { draftFromShortcut = undefined; activeCommands--; }
   } });
 
   pi.on('session_start', async (_event, ctx) => {
