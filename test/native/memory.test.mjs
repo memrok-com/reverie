@@ -223,6 +223,18 @@ test('native cancellation and busy checks preserve memory while recall remains a
   assert.deepEqual(f.contributions(), before);
 });
 
+test('placement previews validate complete intervals without changing chronology or revision', async t => {
+  const f = fixture(t);
+  await f.episode('first', '2000-01-01');
+  await f.request('when', { episodeId: 'first', position: '2010-01-01' });
+  const before = await f.request('status');
+  const preview = await f.request('when', { episodeId: 'preview', position: '2015-01-01', label: 'In between', preview: true });
+  assert.equal(preview.start, Date.UTC(2015, 0, 1));
+  assert.deepEqual(await f.request('status'), before);
+  await assert.rejects(f.request('when', { episodeId: 'overlap', position: '2005-01-01', preview: true }), { code: 'INTERLEAVING_EPISODES' });
+  assert.deepEqual(await f.request('status'), before);
+});
+
 test('native date corrections replace both endpoints, persist and still enforce valid episode slots', async t => {
   const f = fixture(t);
   await f.episode('played', '2010-01-01');
