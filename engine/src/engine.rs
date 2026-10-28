@@ -674,7 +674,7 @@ impl Reverie {
                     })
                 })
                 .transpose()?
-                .unwrap_or(true)
+                .unwrap_or(false)
         } else {
             false
         };

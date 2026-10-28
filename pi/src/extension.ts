@@ -282,7 +282,7 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
     const modelKey = route(ctx), client = service!.client(character.id);
     working = true; status(ctx);
     // Commands return immediately so Cancel remains usable while reflection calls the model.
-    void client.request(action, { episodeId: ctx.sessionManager.getSessionId(), modelKey }).then(result => {
+    void client.request(action, { episodeId: ctx.sessionManager.getSessionId(), modelKey, ...(action === 'rebuild' ? { force: false } : {}) }).then(result => {
       ctx.ui.notify(result.status === 'current' ? 'Memory is already current.' : `Memory updated: ${result.includedEpisodes} included episodes.`, 'info');
     }).catch(error => ctx.ui.notify(errorMessage(error), 'error')).finally(async () => {
       working = false;
