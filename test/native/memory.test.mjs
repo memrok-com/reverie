@@ -6,8 +6,9 @@ import { resolve } from 'node:path';
 import { MemoryClient } from '../../.work/pi-test/memory-client.mjs';
 import { fingerprint, reflectionRequest } from '../support/reflection.mjs';
 import { episodeSource, reflection } from '../fixtures/subjective.mjs';
+import { nativeEnginePath } from '../../scripts/lib/native-toolchain.mjs';
 
-const executable = resolve(process.env.REVERIE_TEST_ENGINE ?? 'engine/target/x86_64-pc-windows-gnu/debug/reverie-engine.exe');
+const executable = nativeEnginePath('debug');
 
 function fixture(t, { infer = reflection, database = resolve('.work/native-tests', randomUUID() + '.sqlite'), characterId = 'mara', settings } = {}) {
   const sources = new Map();

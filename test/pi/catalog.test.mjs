@@ -8,6 +8,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { Catalog } from '../../.work/pi-test/catalog.mjs';
 import { MemoryService } from '../../.work/pi-test/service.mjs';
 import { reflection } from '../fixtures/subjective.mjs';
+import { nativeEnginePath } from '../../scripts/lib/native-toolchain.mjs';
 
 test('catalogs created before thinking preferences retain their saved model during migration', async () => {
   const root = resolve('.work/catalog-tests', randomUUID());
@@ -33,7 +34,7 @@ test('a missing parent directory is unavailable until it returns, while a delete
   await mkdir(parent, { recursive: true }); const path = resolve(parent, 'scene.jsonl');
   await writeFile(path, JSON.stringify({ id: 'm1', parentId: null, type: 'message', message: { role: 'user', content: 'We meet.' } }) + '\n');
   const catalog = new Catalog(resolve(root, 'data')), character = catalog.create('Mara', 'You are Mara.'), warnings = [];
-  const service = new MemoryService(catalog, resolve(process.env.REVERIE_TEST_ENGINE ?? 'engine/target/x86_64-pc-windows-gnu/release/reverie-engine.exe'),
+  const service = new MemoryService(catalog, nativeEnginePath(),
     async request => JSON.stringify(reflection(request)), (source, error) => warnings.push({ source, error }));
   t.after(async () => { await service.close(); catalog.close(); });
   catalog.remember({ characterId: character.id, episodeId: 'scene', cwd: root, path, leaf: 'm1' });
@@ -72,7 +73,7 @@ for (const code of ['EACCES', 'EPERM', 'EIO', 'EBUSY']) {
     });
     const warnings = [];
     const service = new MemoryService(catalog,
-      resolve(process.env.REVERIE_TEST_ENGINE ?? 'engine/target/x86_64-pc-windows-gnu/release/reverie-engine.exe'),
+      nativeEnginePath(),
       async request => JSON.stringify(reflection(request)), (source, error) => warnings.push({ source, error }));
     t.after(async () => { await service.close(); catalog.close(); });
     const blocked = catalog.create('Blocked', 'You are wary.'), healthy = catalog.create('Healthy', 'You are hopeful.');

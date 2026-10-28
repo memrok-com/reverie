@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { MemoryClient } from '../.work/pi-test/memory-client.mjs';
+import { nativeEnginePath } from '../scripts/lib/native-toolchain.mjs';
 
 function clientFor(t, options = {}) {
-  const client = new MemoryClient({ executable: resolve(process.env.REVERIE_TEST_ENGINE ?? 'engine/target/x86_64-pc-windows-gnu/release/reverie-engine.exe'),
+  const client = new MemoryClient({ executable: nativeEnginePath(),
     database: resolve('.work/process-tests', `${randomUUID()}.sqlite`), characterId: 'mara',
     readSource: async id => ({ foundation: 'You are Mara.', messages: [{ id: `${id}:u`, role: 'user', text: 'I lend you my coat by the old lighthouse.' }] }),
     infer: async request => ({ memories: [{ gist: 'I remember your kindness at the lighthouse.', detail: 'Your coat was warm.', feeling: 'I felt safe.',

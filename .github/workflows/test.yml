@@ -1,0 +1,40 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Linux x64 native and Pi tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      REVERIE_VALIDATION_DIR: .work/ci-validation
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - name: Install pinned Rust
+        run: rustup toolchain install 1.99.1 --profile minimal --no-self-update
+      - run: npm ci
+      - name: Typecheck, Rust unit tests, native process tests and Pi integration
+        run: npm test
+      - name: Show test reports after a failure
+        if: failure()
+        run: |
+          if [ -d .work/ci-validation ]; then
+            find .work/ci-validation -name '*.xml' -type f -print -exec cat {} \;
+          fi
