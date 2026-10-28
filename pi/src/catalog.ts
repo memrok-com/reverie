@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { constants, mkdirSync, realpathSync } from 'node:fs';
 import { access } from 'node:fs/promises';
-import { resolve, join } from 'node:path';
+import { resolve, join, dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 
@@ -89,9 +89,17 @@ export class Catalog {
       if (!source.deleted) {
         try { await this.sourceAccess(source.path, constants.R_OK); this.unavailableSources.delete(source.episodeId); }
         catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          let confirmedDeletion = false;
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+            // A disconnected drive or renamed directory also reports ENOENT.
+            // Only a missing file in an accessible parent establishes deletion.
+            try { await this.sourceAccess(dirname(source.path), constants.R_OK); confirmedDeletion = true; }
+            catch { /* Keep the source registered until its directory is accessible. */ }
+          }
+          if (!confirmedDeletion) {
             if (!this.unavailableSources.has(source.episodeId)) {
-              this.unavailableSources.add(source.episodeId); onUnavailable(source, error);
+              try { onUnavailable(source, error); this.unavailableSources.add(source.episodeId); }
+              catch { /* Notification failures must neither block reconciliation nor suppress its retry. */ }
             }
             continue;
           }

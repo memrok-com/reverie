@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { access, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -26,6 +26,39 @@ test('catalogs created before thinking preferences retain their saved model duri
   const reopened = new Catalog(root);
   try { assert.deepEqual(reopened.folderModel(cwd), { provider: 'local', modelId: 'roleplay', thinkingLevel: 'off' }); }
   finally { reopened.close(); }
+});
+
+test('a missing parent directory is unavailable until it returns, while a deleted file in that directory is reconciled', async t => {
+  const root = resolve('.work/catalog-tests', randomUUID()), parent = resolve(root, 'removable-drive'), offline = resolve(root, 'offline');
+  await mkdir(parent, { recursive: true }); const path = resolve(parent, 'scene.jsonl');
+  await writeFile(path, JSON.stringify({ id: 'm1', parentId: null, type: 'message', message: { role: 'user', content: 'We meet.' } }) + '\n');
+  const catalog = new Catalog(resolve(root, 'data')), character = catalog.create('Mara', 'You are Mara.'), warnings = [];
+  const service = new MemoryService(catalog, resolve(process.env.REVERIE_TEST_ENGINE ?? 'engine/target/x86_64-pc-windows-gnu/release/reverie-engine.exe'),
+    async request => JSON.stringify(reflection(request)), (source, error) => warnings.push({ source, error }));
+  t.after(async () => { await service.close(); catalog.close(); });
+  catalog.remember({ characterId: character.id, episodeId: 'scene', cwd: root, path, leaf: 'm1' });
+  await service.client(character.id).request('when', { episodeId: 'scene', position: '2000-01-01' });
+  await service.client(character.id).request('memorize', { episodeId: 'scene' });
+  await rename(parent, offline);
+  assert.equal(await service.reconcile(), 0); assert.equal(catalog.source('scene').deleted, 0);
+  assert.equal(warnings.length, 1);
+  assert.equal((await service.client(character.id).request('retrieve', { at: '2010-01-01' })).memories.length, 1);
+  await rename(offline, parent); await service.reconcile();
+  catalog.remember({ characterId: character.id, episodeId: 'scene', cwd: root, path, leaf: 'm1' });
+  await rm(path); assert.equal(await service.reconcile(), 1);
+  assert.equal(catalog.source('scene').deleted, 2);
+});
+
+test('a failed warning callback does not block reconciliation or permanently suppress its retry', async t => {
+  const root = resolve('.work/catalog-tests', randomUUID());
+  const catalog = new Catalog(root, async () => { throw Object.assign(new Error('Unreadable'), { code: 'EACCES' }); });
+  t.after(() => catalog.close());
+  const character = catalog.create('Mara', 'You are Mara.');
+  catalog.remember({ characterId: character.id, episodeId: 'scene', cwd: root, path: resolve(root, 'scene.jsonl'), leaf: null });
+  await catalog.missingSources(() => { throw new Error('Notification failed'); });
+  let warnings = 0;
+  await catalog.missingSources(() => { warnings++; }); await catalog.missingSources(() => { warnings++; });
+  assert.equal(warnings, 1); assert.equal(catalog.source('scene').deleted, 0);
 });
 
 for (const code of ['EACCES', 'EPERM', 'EIO', 'EBUSY']) {
