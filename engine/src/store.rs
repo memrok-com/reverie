@@ -249,21 +249,23 @@ impl MemoryStore {
         let Some(start) = start else {
             return Ok(0);
         };
-        tx.execute("DELETE FROM corrections WHERE character_id=? AND episode_id IN (SELECT id FROM episodes WHERE character_id=? AND now>=?)", params![character,character,start])?;
+        // An earlier episode may end exactly when this one starts. Invalidation
+        // follows episode order, not the time its memories became available.
+        tx.execute("DELETE FROM corrections WHERE character_id=? AND episode_id IN (SELECT id FROM episodes WHERE character_id=? AND start>=?)", params![character,character,start])?;
         let invalidated: i64 = tx.query_row(
-            "SELECT COUNT(*) FROM contributions WHERE character_id=? AND end>=?",
+            "SELECT COUNT(*) FROM contributions WHERE character_id=? AND start>=?",
             params![character, start],
             |row| row.get(0),
         )?;
         tx.execute(
-            "DELETE FROM memories WHERE character_id=? AND available_at>=?",
-            params![character, start],
+            "DELETE FROM memories WHERE character_id=? AND episode_id IN (SELECT id FROM episodes WHERE character_id=? AND start>=?)",
+            params![character, character, start],
         )?;
         tx.execute(
-            "DELETE FROM contributions WHERE character_id=? AND end>=?",
+            "DELETE FROM contributions WHERE character_id=? AND start>=?",
             params![character, start],
         )?;
-        tx.execute("UPDATE episodes SET source_hash=NULL,input_hash=NULL,published_end=NULL WHERE character_id=? AND now>=?", params![character, start])?;
+        tx.execute("UPDATE episodes SET source_hash=NULL,input_hash=NULL,published_end=NULL WHERE character_id=? AND start>=?", params![character, start])?;
         tx.execute(
             "DELETE FROM episodes WHERE character_id=? AND id=?",
             params![character, episode],

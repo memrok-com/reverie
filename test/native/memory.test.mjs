@@ -522,6 +522,39 @@ test('correcting an adjacent later episode preserves earlier memory at their sha
   assert.equal((await f.request('retrieve', { at: '2020-01-01' })).memories.length, 1);
 });
 
+test('deleting an adjacent later episode preserves earlier memory and its reviewed correction', async t => {
+  const f = fixture(t);
+  await f.episode('first', '2000-01-01');
+  await f.request('when', { episodeId: 'first', position: '2010-01-01' });
+  await f.request('memorize', { episodeId: 'first' });
+  const preview = await correctionPreview(f, 'first');
+  await f.request('applyCorrection', { token: preview.token });
+  await f.request('rebuild');
+  await f.episode('deleted', '2010-01-01');
+  await f.request('memorize', { episodeId: 'deleted' });
+  await f.episode('later', '2020-01-01');
+  await f.request('memorize', { episodeId: 'later' });
+  const laterCorrection = await correctionPreview(f, 'later');
+  await f.request('applyCorrection', { token: laterCorrection.token });
+  const first = (await f.request('inspect')).episodes[0];
+  const calls = f.calls.length;
+
+  assert.equal((await f.request('forget', { episodeId: 'deleted' })).invalidatedEpisodes, 2);
+  assert.equal(f.calls.length, calls);
+  await f.restart();
+  const inspection = await f.request('inspect');
+  assert.deepEqual(inspection.episodes.map(item => item.episode.id), ['first', 'later']);
+  assert.deepEqual(inspection.episodes[0], first);
+  assert.equal(inspection.episodes[1].state, 'invalidated');
+  assert.equal(inspection.episodes[1].episode.included, true);
+  assert.equal(inspection.episodes[1].correction, null);
+  assert.deepEqual((await f.request('retrieve', { at: '2030-01-01' })).memories.map(item => item.episodeId), ['first']);
+  assert.equal((await f.request('forget', { episodeId: 'deleted' })).invalidatedEpisodes, 0);
+  await f.request('rebuild', { force: false });
+  assert.deepEqual(f.contributions()[0], first.contribution);
+  assert.deepEqual(f.contributions().map(item => item.episodeId), ['first', 'later']);
+});
+
 test('v1 databases migrate without changing existing published memory', async t => {
   const f = fixture(t);
   await f.episode('first', '2000-01-01'); await f.request('memorize', { episodeId: 'first' });
