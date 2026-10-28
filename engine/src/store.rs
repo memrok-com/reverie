@@ -249,23 +249,42 @@ impl MemoryStore {
         let Some(start) = start else {
             return Ok(0);
         };
-        // An earlier episode may end exactly when this one starts. Invalidation
-        // follows episode order, not the time its memories became available.
-        tx.execute("DELETE FROM corrections WHERE character_id=? AND episode_id IN (SELECT id FROM episodes WHERE character_id=? AND start>=?)", params![character,character,start])?;
-        let invalidated: i64 = tx.query_row(
-            "SELECT COUNT(*) FROM contributions WHERE character_id=? AND start>=?",
-            params![character, start],
-            |row| row.get(0),
-        )?;
-        tx.execute(
-            "DELETE FROM memories WHERE character_id=? AND episode_id IN (SELECT id FROM episodes WHERE character_id=? AND start>=?)",
-            params![character, character, start],
-        )?;
-        tx.execute(
-            "DELETE FROM contributions WHERE character_id=? AND start>=?",
-            params![character, start],
-        )?;
-        tx.execute("UPDATE episodes SET source_hash=NULL,input_hash=NULL,published_end=NULL WHERE character_id=? AND start>=?", params![character, start])?;
+        let published_start: Option<i64> = tx
+            .query_row(
+                "SELECT start FROM contributions WHERE character_id=? AND episode_id=?",
+                params![character, episode],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let mut invalidated = 0;
+        // Unmemorized source was never part of a later reflection prefix.
+        if let Some(published_start) = published_start {
+            let cutoff = start.min(published_start);
+            // Use the published chronology for every derivative. Current episode
+            // dates can drift from the snapshot that dependent memory learned from.
+            let affected: Vec<String> = tx
+                .prepare("SELECT episode_id FROM contributions WHERE character_id=? AND start>=?")?
+                .query_map(params![character, cutoff], |row| row.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            invalidated = affected.len();
+            for id in affected {
+                tx.execute(
+                    "DELETE FROM memories WHERE character_id=? AND episode_id=?",
+                    params![character, id],
+                )?;
+                tx.execute(
+                    "DELETE FROM contributions WHERE character_id=? AND episode_id=?",
+                    params![character, id],
+                )?;
+                tx.execute(
+                    "DELETE FROM corrections WHERE character_id=? AND episode_id=?",
+                    params![character, id],
+                )?;
+                tx.execute("UPDATE episodes SET source_hash=NULL,input_hash=NULL,published_end=NULL WHERE character_id=? AND id=?", params![character, id])?;
+            }
+            // Withdrawn/invalidated pins have no contribution row to select above.
+            tx.execute("DELETE FROM corrections WHERE character_id=? AND episode_id IN (SELECT id FROM episodes WHERE character_id=? AND start>=? AND id NOT IN (SELECT episode_id FROM contributions WHERE character_id=?))", params![character, character, cutoff, character])?;
+        }
         tx.execute(
             "DELETE FROM episodes WHERE character_id=? AND id=?",
             params![character, episode],
@@ -275,7 +294,7 @@ impl MemoryStore {
             [character],
         )?;
         tx.commit()?;
-        Ok(invalidated as usize)
+        Ok(invalidated)
     }
 
     pub fn publish(

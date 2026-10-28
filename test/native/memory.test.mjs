@@ -555,6 +555,40 @@ test('deleting an adjacent later episode preserves earlier memory and its review
   assert.deepEqual(f.contributions().map(item => item.episodeId), ['first', 'later']);
 });
 
+test('deleting a never-memorized draft preserves later published memory and corrections', async t => {
+  const f = fixture(t);
+  await f.episode('draft', '2000-01-01'); await f.episode('later', '2010-01-01');
+  await f.request('memorize', { episodeId: 'later' });
+  const preview = await correctionPreview(f, 'later'); await f.request('applyCorrection', { token: preview.token });
+  const before = (await f.request('inspect')).episodes[1], calls = f.calls.length;
+  assert.equal((await f.request('forget', { episodeId: 'draft' })).invalidatedEpisodes, 0);
+  await f.restart();
+  assert.deepEqual((await f.request('inspect')).episodes, [before]);
+  assert.equal(f.calls.length, calls);
+});
+
+test('deletion selects memories and contributions by the same published starts after direct date drift', async t => {
+  const f = fixture(t);
+  await f.episode('mid', '2010-01-01'); await f.request('memorize', { episodeId: 'mid' });
+  await f.episode('moved', '2020-01-01'); await f.request('memorize', { episodeId: 'moved' });
+  await f.request('when', { episodeId: 'moved', position: '2000-01-01', resetStart: true });
+  assert.equal((await f.request('forget', { episodeId: 'mid' })).invalidatedEpisodes, 2);
+  assert.equal(f.contributions().length, 0);
+  assert.equal((await f.request('retrieve', { at: '2040-01-01' })).memories.length, 0);
+});
+
+test('deleting a source moved later removes dependents formed in its original slot', async t => {
+  const f = fixture(t);
+  await f.episode('gone', '2000-01-01'); await f.request('memorize', { episodeId: 'gone' });
+  await f.episode('dependent', '2010-01-01'); await f.request('memorize', { episodeId: 'dependent' });
+  const preview = await correctionPreview(f, 'dependent'); await f.request('applyCorrection', { token: preview.token });
+  await f.request('when', { episodeId: 'gone', position: '2030-01-01', resetStart: true });
+  assert.equal((await f.request('forget', { episodeId: 'gone' })).invalidatedEpisodes, 2);
+  assert.equal(f.contributions().length, 0);
+  assert.equal((await f.request('inspect')).episodes[0].correction, null);
+  assert.equal((await f.request('retrieve', { at: '2040-01-01' })).memories.length, 0);
+});
+
 test('v1 databases migrate without changing existing published memory', async t => {
   const f = fixture(t);
   await f.episode('first', '2000-01-01'); await f.request('memorize', { episodeId: 'first' });
