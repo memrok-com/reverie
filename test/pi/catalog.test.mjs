@@ -62,6 +62,26 @@ test('a failed warning callback does not block reconciliation or permanently sup
   assert.equal(warnings, 1); assert.equal(catalog.source('scene').deleted, 0);
 });
 
+test('malformed timeout preferences warn once and retain usable engines; fractional seconds are rounded safely', async () => {
+  const previous = process.env.REVERIE_REFLECTION_INACTIVITY_SECONDS;
+  try {
+    for (const [raw, warning] of [['ten', true], ['30m', true], ['', true], ['Infinity', true], ['-1', true], ['86401', true], ['1.0005', false], ['0.1', false], ['86400', false]]) {
+      process.env.REVERIE_REFLECTION_INACTIVITY_SECONDS = raw;
+      const catalog = new Catalog(resolve('.work/catalog-tests', randomUUID())), messages = [];
+      const service = new MemoryService(catalog, nativeEnginePath(), async () => { throw new Error('No model should be called'); }, undefined, message => messages.push(message));
+      try {
+        assert.equal((await service.client('one').request('ping')).runtime, 'rust');
+        assert.equal((await service.client('two').request('ping')).runtime, 'rust');
+        assert.equal(messages.length, warning ? 1 : 0, raw);
+        if (warning) assert.match(messages[0], /REVERIE_REFLECTION_INACTIVITY_SECONDS.*default ten-minute/);
+      } finally { await service.close(); catalog.close(); }
+    }
+  } finally {
+    if (previous === undefined) delete process.env.REVERIE_REFLECTION_INACTIVITY_SECONDS;
+    else process.env.REVERIE_REFLECTION_INACTIVITY_SECONDS = previous;
+  }
+});
+
 for (const code of ['EACCES', 'EPERM', 'EIO', 'EBUSY']) {
   test(`source reconciliation isolates ${code}, warns once, recovers and still processes deletions`, async t => {
     const root = resolve('.work/catalog-tests', randomUUID()), blockedPath = resolve(root, 'blocked.jsonl');

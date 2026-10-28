@@ -71,10 +71,11 @@ export class MemoryClient {
       let result: unknown;
       if (method === 'source.read') result = await this.options.readSource(params.episodeId, controller.signal);
       else if (method === 'model.reflect' && record(params.request) && typeof params.modelKey === 'string') {
-        let lastProgress = 0;
+        let lastProgress = -Infinity;
         const onProgress = () => {
-          if (controller.signal.aborted || this.callbacks.get(id) !== controller || Date.now() - lastProgress < 50) return;
-          lastProgress = Date.now(); this.send({ callProgress: id });
+          const now = performance.now();
+          if (controller.signal.aborted || this.callbacks.get(id) !== controller || now - lastProgress < 50) return;
+          lastProgress = now; this.send({ callProgress: id });
         };
         result = await this.options.infer(params.request as unknown as ReflectionRequest,
           { episodeId: params.episodeId, modelKey: params.modelKey, signal: controller.signal, onProgress });

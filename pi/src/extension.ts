@@ -72,7 +72,8 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
           if (event.type === 'done' && event.reason === 'length') throw new Error('Memory formation reached the model output limit.');
         }
         signal.throwIfAborted(); return text;
-      }, (source, error) => context?.ui.notify(`Cannot check an episode source for ${catalog!.character(source.characterId)?.name ?? 'a character'}: ${source.path}. Check file permissions or reconnect its drive. Saved memory is retained. ${errorMessage(error)}`, 'warning'));
+      }, (source, error) => context?.ui.notify(`Cannot check an episode source for ${catalog!.character(source.characterId)?.name ?? 'a character'}: ${source.path}. Check file permissions or reconnect its drive. Saved memory is retained. ${errorMessage(error)}`, 'warning'),
+      message => context?.ui.notify(message, 'warning'));
     return { catalog, service };
   }
   function selected(ctx: ExtensionContext, required = true): Character | undefined {
