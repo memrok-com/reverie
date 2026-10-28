@@ -13,7 +13,7 @@ export function nativeTarget() {
   if (process.platform === 'win32') return 'x86_64-pc-windows-gnu';
   const version = spawnSync('rustc', ['-vV'], { env: { ...process.env, RUSTUP_TOOLCHAIN: '1.99.1' }, encoding: 'utf8' });
   const host = version.stdout?.match(/^host: (\S+)$/m)?.[1];
-  if (version.error || version.status !== 0 || !host) throw version.error ?? new Error('Install Rust 1.99.1 for the host target. See docs/development.md.');
+  if (version.error || version.status !== 0 || !host) throw new Error('Install Rust 1.99.1 for the host target and make rustc available on PATH. See docs/development.md.', { cause: version.error });
   return host;
 }
 

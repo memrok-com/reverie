@@ -2,7 +2,12 @@ name: Tests
 
 on:
   push:
+    branches: [main]
   pull_request:
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -12,6 +17,8 @@ jobs:
     name: Linux x64 native and Pi tests
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      REVERIE_VALIDATION_DIR: .work/ci-validation
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -27,4 +34,7 @@ jobs:
         run: npm test
       - name: Show test reports after a failure
         if: failure()
-        run: cat validation/*-tests.xml
+        run: |
+          if [ -d .work/ci-validation ]; then
+            find .work/ci-validation -name '*.xml' -type f -print -exec cat {} \;
+          fi
