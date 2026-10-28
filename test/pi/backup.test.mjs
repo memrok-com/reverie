@@ -67,6 +67,9 @@ async function destination(t, root) {
 
 test('story ZIP round trip relocates Pi source, preserves selected branches, corrections, withdrawal and provenance', async t => {
   const f = await fixture(t), original = await f.client.request('inspect');
+  const latestPath = f.catalog.source(f.later).path, lines = (await readFile(latestPath, 'utf8')).trim().split('\n');
+  const header = JSON.parse(lines[0]); header.parentSession = f.catalog.source(f.first).path;
+  lines[0] = JSON.stringify(header); await writeFile(latestPath, lines.join('\n') + '\n');
   await writeFile(join(f.root, 'auth.json'), '{"apiKey":"PROVIDER_SECRET_MUST_NOT_EXPORT"}');
   await exportStory(f.catalog, f.character.id, f.archive, f.cwd);
   const zip = unzipSync(await readFile(f.archive)), story = JSON.parse(Buffer.from(zip['story.json']).toString());
@@ -93,11 +96,18 @@ test('story ZIP round trip relocates Pi source, preserves selected branches, cor
   assert.match(JSON.stringify(selectedBefore), /SELECTED/); assert.doesNotMatch(JSON.stringify(selectedBefore), /REJECTED/);
   const resumed = SessionManager.open(source.path);
   assert.deepEqual(extractSource(resumed.getBranch()), selectedBefore);
+  assert.equal(resumed.getHeader().parentSession, d.catalog.source(f.first).path);
   assert.equal(resumed.getSessionId(), f.later); assert.equal(resumed.getCwd(), d.cwd);
   assert.ok(d.catalog.recall(resumed.getBranch().findLast(entry => entry.type === 'message').id));
   const rebuilt = await d.service.client(restored.id).request('rebuild', { force: true });
   assert.equal(rebuilt.reflected, 2);
   assert.equal((await d.service.client(restored.id).request('status')).episodes.find(episode => episode.id === f.withdrawn).included, false);
+  const marker = join(d.home, `restore-${restored.id}.json`), directory = source.path.split(/[\\/]/).at(-2);
+  await writeFile(marker, JSON.stringify({ characterId: restored.id, directory, cwd: d.cwd, pid: 2147483647 }));
+  const checked = new Catalog(d.home);
+  try { assert.equal(checked.character(restored.id).name, 'Mara'); await readFile(source.path); }
+  finally { checked.close(); }
+  await assert.rejects(readFile(marker), { code: 'ENOENT' });
 });
 
 test('backup includes an active unplayed Pi setup without creating a live transcript file', async t => {
@@ -147,6 +157,17 @@ test('restore rolls back both databases and removes staged files when publicatio
   assert.ok(!(await readdir(d.home)).some(name => name.startsWith('restore-')));
   const db = new DatabaseSync(d.catalog.memoryPath);
   try { assert.equal(db.prepare('SELECT COUNT(*) AS n FROM characters').get().n, 0); } finally { db.close(); }
+});
+
+test('a live restore journal is never overwritten or removed by a second import', async t => {
+  const f = await fixture(t); await exportStory(f.catalog, f.character.id, f.archive, f.cwd);
+  const d = await destination(t, f.root), marker = join(d.home, `restore-${f.character.id}.json`);
+  const value = JSON.stringify({ characterId: f.character.id, directory: randomUUID(), cwd: d.cwd, pid: process.pid });
+  await writeFile(marker, value);
+  await assert.rejects(restoreStory(d.catalog, f.archive, d.cwd, executable), /EEXIST/);
+  assert.equal(await readFile(marker, 'utf8'), value);
+  assert.deepEqual(d.catalog.characters(), []); assert.deepEqual(d.catalog.sources(), []);
+  assert.deepEqual(await readdir(join(d.home, 'restored')), []);
 });
 
 test('startup recovers a restore interrupted between database commits', async t => {

@@ -602,7 +602,7 @@ test('Pi backup restores into another folder, resumes the selected reply and han
   await restored.session.prompt('Continue our story.');
   assert.equal(restored.requests.length, 0); assert.equal(restored.draft, 'Continue our story.');
   restored.choices.push(0); await restored.command('model');
-  await restored.command('on'); await restored.command('rebuild');
+  await restored.command('on'); await restored.session.prompt('I return to the lighthouse.'); await restored.command('rebuild');
   await restored.until(() => restored.notices.some(item => item.message.startsWith('Memory updated:')));
   assert.equal(restored.errors.length, 0, JSON.stringify(restored.errors));
 });
