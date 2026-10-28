@@ -8,6 +8,7 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
 import { Catalog, type Character } from './catalog.js';
 import { MemoryService, executablePath } from './service.js';
 import { alternatives, extractSource, ownerOf, sourceHash, textContent } from './source.js';
@@ -333,12 +334,14 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
     remember(ctx); await service!.reconcile();
     const { episodes } = await service!.client(character.id).request('status');
     if (!episodes.length) { ctx.ui.notify('No dated episodes yet.', 'info'); return; }
-    const labels = episodes.map((item, index) => `${index + 1}. ${episodeTitle(item, character.name)} · ${item.included ? 'Memorized' : 'Not memorized'}${!catalog!.source(item.id) ? ' · No saved chat yet' : ''}`);
-    const choice = await ctx.ui.select('Episode chats', labels);
+    const labels = episodes.map((item, index) => `${index + 1}. ${episodeTitle(item, character.name)} · ${new Date(item.start).toISOString()} → ${new Date(item.now).toISOString()} · ${item.included ? 'Memorized' : 'Not memorized'}${!catalog!.source(item.id) ? ' · No saved chat yet' : ''}`);
+    const choice = await ctx.ui.select('Episode chats · chronological order', [...labels, 'Start episode in a gap']);
     if (!choice) return;
+    if (choice === 'Start episode in a gap') { await startInGap(ctx, character, episodes); return; }
     const target = episodes[labels.indexOf(choice)];
     if (!target) return;
-    const action = await ctx.ui.select(episodeTitle(target, character.name), ['Resume', 'Delete']);
+    const action = await ctx.ui.select(episodeTitle(target, character.name), ['Resume', 'Inspect memory', 'Delete']);
+    if (action === 'Inspect memory') { await browseMemory(ctx, character, 'browse', target.id); return; }
     if (action === 'Delete') { await deleteChat(ctx, character, target.id); return; }
     if (action !== 'Resume') return;
     if (target.id === ctx.sessionManager.getSessionId()) { ctx.ui.notify('This episode is already open.', 'info'); return; }
@@ -352,6 +355,44 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
       manager.appendCustomEntry('reverie.binding', { characterId: character.id });
       manager.appendCustomEntry('reverie.time', { now: target.now });
       manager.appendSessionInfo(episodeTitle(target, character.name));
+    } });
+  }
+  async function startInGap(ctx: ExtensionCommandContext, character: Character, episodes: Episode[]): Promise<void> {
+    const name = (item: Episode) => item.label === item.id ? character.name : item.label;
+    const gaps: { label: string; after?: number; before?: number }[] = [
+      { label: `Before ${name(episodes[0]!)} · before ${new Date(episodes[0]!.start).toISOString()}`, before: episodes[0]!.start },
+    ];
+    for (let i = 1; i < episodes.length; i++) {
+      const earlier = episodes[i - 1]!, later = episodes[i]!;
+      if (later.start - earlier.now > 1) gaps.push({
+        label: `${name(earlier)} → ${name(later)} · after ${new Date(earlier.now).toISOString()} · before ${new Date(later.start).toISOString()}`,
+        after: earlier.now, before: later.start,
+      });
+    }
+    const last = episodes.at(-1)!;
+    gaps.push({ label: `After ${name(last)} · after ${new Date(last.now).toISOString()}`, after: last.now });
+    const choice = await ctx.ui.select('Choose space for a new episode', gaps.map(gap => gap.label));
+    const gap = gaps.find(gap => gap.label === choice); if (!gap) return;
+    const raw = await ctx.ui.input('New episode date and label (YYYY-MM-DD or zoned timestamp)');
+    if (!raw?.trim()) return;
+    const [position, ...label] = raw.trim().split(/\s+/);
+    const placed = await service!.client(character.id).request('when', { episodeId: randomUUID(), position, label: label.join(' ') || 'New episode', preview: true });
+    if ((gap.after !== undefined && placed.start <= gap.after) || (gap.before !== undefined && placed.start >= gap.before)) {
+      throw new Error('Choose a date strictly inside the selected gap. Existing episodes and time jumps occupy their full intervals.');
+    }
+    if (!await ctx.ui.confirm('Start a new episode here?', `${placed.label} · ${new Date(placed.start).toISOString()}\n${gap.label}\nThis creates a new chat at this explicit date. Existing episodes keep their dates.`)) return;
+    await ctx.newSession({ setup: async manager => {
+      // Session replacement retires this extension instance. Initialize Pi's new
+      // manager directly and close the temporary native connection before startup.
+      const setupCatalog = new Catalog(dataHome);
+      const setupService = new MemoryService(setupCatalog, options.executable ?? executablePath(resolve(dirname(fileURLToPath(import.meta.url)), '..')),
+        async () => { throw new Error('Episode placement never calls a model.'); });
+      try {
+        const dated = await setupService.client(character.id).request('when', { episodeId: manager.getSessionId(), position: placed.start, label: placed.label });
+        manager.appendCustomEntry('reverie.binding', { characterId: character.id });
+        manager.appendCustomEntry('reverie.time', { now: dated.now });
+        manager.appendSessionInfo(episodeTitle(dated, character.name));
+      } finally { await setupService.close(); setupCatalog.close(); }
     } });
   }
   async function inspectMemory(ctx: ExtensionCommandContext, character: Character): Promise<MemoryInspection> {

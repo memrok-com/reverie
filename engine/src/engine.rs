@@ -264,6 +264,13 @@ impl Reverie {
         episodes.retain(|item| item.id != episode_id);
         episodes.push(episode.clone());
         assert_intervals(&episodes)?;
+        if params
+            .get("preview")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            return Ok(serde_json::to_value(episode)?);
+        }
         if previous.as_ref().is_none_or(|item| {
             item.start != episode.start || item.now != now || item.label != episode.label
         }) {
