@@ -26,7 +26,7 @@ async function fixture(t, existing) {
   await mkdir(cwd, { recursive: true }); await mkdir(agentDir, { recursive: true });
   const inputs = [], editors = [], choices = [], notices = [], widgets = new Map(), requests = [], errors = [], inspections = [], requestedModels = [], requestedThinking = [];
   let draft = '', replies = 0;
-  const controls = { holdReflection: false, reflectionStarted: false, replyFailure: undefined, confirmDelete: true };
+  const controls = { holdReflection: false, reflectionStarted: false, replyFailure: undefined, reflectionFailure: false, confirmDelete: true };
   const streamSimple = (_model, context, options) => {
     const stream = new AssistantMessageEventStream();
     queueMicrotask(() => {
@@ -40,6 +40,10 @@ async function fixture(t, existing) {
       const text = input?.episode ? JSON.stringify(reflection({ input })) : `Reply ${++replies}: I remember the blue lantern.`;
       const reply = { role: 'assistant', content: [{ type: 'text', text }], api: model.api, provider: model.provider, model: model.id,
         usage: { input: 10, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 20, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: 'stop', timestamp: Date.now() };
+      if (input?.episode && controls.reflectionFailure) {
+        reply.errorMessage = 'Reflection failed (fixture)';
+        stream.push({ type: 'error', reason: 'error', error: reply }); stream.end(); return;
+      }
       if (!input?.episode && controls.replyFailure) {
         reply.content = []; reply.stopReason = controls.replyFailure;
         reply.errorMessage = controls.replyFailure === 'aborted' ? 'Cancelled' : 'OAuth refresh failed (fixture)';
@@ -558,6 +562,59 @@ test('episode browser shows full future memory and attributed source without sup
   assert.doesNotMatch(JSON.stringify(f.requests.at(-1)), /FUTURE_SOURCE_SECRET|The future secret|Stored recollections/);
   await f.command('explain');
   assert.doesNotMatch(f.inspections.at(-1), /The future secret/);
+  assert.equal(f.errors.length, 0, JSON.stringify(f.errors));
+});
+
+test('memorization reviews published results, keeps unchanged memory accessible and offers direct sources and corrections', async t => {
+  const f = await fixture(t); await f.setup(); f.inputs.push('2000-01-01 The lighthouse');
+  await f.session.prompt('I offer a lantern.');
+  const reviews = () => f.inspections.filter(text => text.includes('Published episode review'));
+  const entries = f.manager.getEntries().length;
+  await f.command('memorize'); await f.until(() => reviews().length === 1);
+  assert.match(reviews()[0], /Remembered meaning: I remember The lighthouse/);
+  assert.match(reviews()[0], /Retained detail: There was a blue lantern/);
+  assert.match(reviews()[0], /Emotional residue: I felt unsettled/);
+  assert.match(reviews()[0], /Broader impressions · snapshot formed with this episode/);
+  assert.match(reviews()[0], /Contributing episodes: The lighthouse/);
+  assert.match(reviews()[0], /Supporting message IDs:/);
+  assert.equal(f.manager.getEntries().length, entries);
+  const requests = f.requests.length;
+  await f.command('memorize'); await f.until(() => reviews().length === 2);
+  assert.ok(f.notices.some(item => item.message === 'Memory is already current.'));
+  assert.equal(f.requests.length, requests);
+  assert.equal(reviews()[1], reviews()[0]);
+  await f.session.prompt('We stay until dawn.');
+  await f.command('memorize'); await f.until(() => reviews().length === 3);
+  assert.equal(f.requests.length, requests + 2, 'One played reply and one replacement reflection.');
+  assert.doesNotMatch(JSON.stringify(f.requests), /Published episode review|Stored recollections · complete/);
+  f.choices.push('Supporting played source', 0); await f.command('memory episode');
+  assert.match(f.inspections.at(-1), /Player:\s+I offer a lantern/);
+  assert.match(f.inspections.at(-1), /Mara \(companion\)/);
+  f.choices.push('Correct a recollection', 0);
+  f.editors.push('The player offered the lantern.', 'A blue lantern.', 'I felt unsettled.');
+  f.inputs.push(extractSource(f.manager.getBranch()).messages[0].id);
+  await f.command(`memory episode ${f.manager.getSessionId()}`);
+  assert.ok(f.notices.some(item => item.message.startsWith('Correction applied.')));
+  assert.equal(f.errors.length, 0, JSON.stringify(f.errors));
+});
+
+test('failed and cancelled memorization do not review unpublished memory', async t => {
+  const f = await fixture(t); await f.setup(); f.inputs.push('2000-01-01 The lighthouse');
+  await f.session.prompt('We meet.');
+  const reviews = () => f.inspections.filter(text => text.includes('Published episode review'));
+  f.controls.reflectionFailure = true;
+  await f.command('memorize'); await f.until(() => f.notices.some(item => /Reflection failed/.test(item.message)));
+  assert.equal(reviews().length, 0);
+  f.controls.reflectionFailure = false;
+  await f.command('memorize'); await f.until(() => reviews().length === 1);
+  await f.session.prompt('There is more to remember.');
+  f.controls.holdReflection = true;
+  await f.command('memorize'); await f.until(() => f.controls.reflectionStarted);
+  await f.command('cancel'); await f.until(() => f.notices.some(item => item.level === 'error' && /cancel/i.test(item.message)));
+  assert.equal(reviews().length, 1);
+  f.choices.push('Read recollections'); await f.command('memory episode');
+  assert.match(f.inspections.at(-1), /I remember The lighthouse/);
+  assert.match(f.inspections.at(-1), /Stale · unmemorized changes/);
   assert.equal(f.errors.length, 0, JSON.stringify(f.errors));
 });
 

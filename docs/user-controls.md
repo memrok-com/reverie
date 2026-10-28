@@ -12,9 +12,10 @@ Run `/reverie` or Ctrl+Alt+M to open the character and memory menu.
 | `/reverie on` / `off` | Enable or disable memory retrieval and formation. Personality remains active. |
 | `/reverie when [date] [label]` | Set fictional time, or open date input. A visible confirmation and widget show the result. |
 | `/reverie chats` | List the character's dated episodes and resume or delete one, including unplayed setups. |
-| `/reverie memorize` | Form or replace the episode's contribution from its selected full branch. |
+| `/reverie memorize` | Form or replace the episode's contribution from its selected full branch, then review the actual published recollections and broader impressions. |
 | `/reverie memory` | Complete stored recollections and episode states, plus a clearly labeled retrieval sample at the current story point. |
 | `/reverie memory browse` | Select an episode to read every published recollection, inspect broader impressions separately, follow played sources, correct an item, or resume its chat. Also available through **Inspect memory** in the menu. |
+| `/reverie memory episode [id]` | Open sources, corrections and inspection actions directly for the current episode, or the ID shown after memorization. |
 | `/reverie memory impressions` / `sources` | Choose an episode's broader-impression snapshot or supporting played text, with player/companion authorship. |
 | `/reverie memory eligible [date]` | All stored recollections eligible at the active story point, or an explicit date, independently of cue and recall limits. |
 | `/reverie memory correct` | Choose a published recollection, edit its meaning/detail/feeling/source references, and review dependent invalidation before applying. |
