@@ -40,6 +40,14 @@ npm ci
 
 Rust documentation is included because release packaging copies its copyright and license notices. The compiler lives in `.work/toolchains/rustup/toolchains/1.99.1-x86_64-pc-windows-gnu`; the build also accepts older local checkouts with the same compiler installed under `stable-x86_64-pc-windows-gnu`, checking the exact Rust version before use. The scripts set the compiler paths for each child process. These tools and their caches remain ignored by Git.
 
+## Linux x64 development
+
+Install Node 24.9–24.x and Rust 1.99.1 with your normal Rust installation (`rustup toolchain install 1.99.1 --profile minimal`). Install a C compiler and linker, for example Ubuntu's `build-essential`, for bundled SQLite. Then run `npm ci` and `npm test` from the repository root. No workspace-local toolchains are needed on Linux.
+
+`scripts/cargo.mjs` verifies the pinned compiler and builds for the compiler's host target on Linux; Windows retains the workspace-local GNU/MinGW build. Test executables resolve through `scripts/lib/native-toolchain.mjs`, with `REVERIE_TEST_ENGINE` available for a separately built executable. A Linux x64 GitHub workflow runs `npm test` on pushes and pull requests, including TypeScript checking, locked Rust unit checks, native/process tests and Pi integration. Its generated validation reports are not committed.
+
+Windows x64 remains the only shipped and verified Pi package platform. Linux support here covers development builds and automated integration tests; packaging a Linux engine and testing an installed Linux package are separate work.
+
 ## Verify and package
 
 ```text

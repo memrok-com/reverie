@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { sanitizeTestReport } from './lib/validation-report.mjs';
+import { nativeEnginePath } from './lib/native-toolchain.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 function run(args, env = process.env) {
@@ -15,5 +16,5 @@ run(['scripts/cargo.mjs', 'test', '--locked']);
 run(['scripts/cargo.mjs', 'build', '--release', '--locked']);
 run(['--test', '--test-reporter=junit', '--test-reporter-destination=validation/native-tests.xml',
   'test/native/*.test.mjs', 'test/process.test.mjs'],
-{ ...process.env, REVERIE_TEST_ENGINE: resolve(root, 'engine/target/x86_64-pc-windows-gnu/release/reverie-engine.exe') });
+{ ...process.env, REVERIE_TEST_ENGINE: nativeEnginePath() });
 console.log('Rust unit checks and native release integration checks passed. See validation/native-tests.xml.');

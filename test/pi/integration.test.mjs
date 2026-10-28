@@ -11,8 +11,9 @@ import { Catalog } from '../../.work/pi-test/catalog.mjs';
 import { MemoryClient } from '../../.work/pi-test/memory-client.mjs';
 import { alternatives, extractSource } from '../../.work/pi-test/source.mjs';
 import { reflection } from '../fixtures/subjective.mjs';
+import { nativeEnginePath } from '../../scripts/lib/native-toolchain.mjs';
 
-const executable = resolve('engine/target/x86_64-pc-windows-gnu/release/reverie-engine.exe');
+const executable = nativeEnginePath();
 const model = { id: 'fixture', name: 'Fixture', provider: 'fixture', api: 'openai-completions', baseUrl: 'http://127.0.0.1:1',
   reasoning: false, input: ['text'], contextWindow: 64000, maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
 const roleplayModel = { ...model, id: 'local-roleplay', name: 'Local roleplay', reasoning: true };
