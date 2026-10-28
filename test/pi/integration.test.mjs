@@ -27,7 +27,8 @@ async function fixture(t, existing) {
   const inputs = [], editors = [], choices = [], notices = [], widgets = new Map(), requests = [], errors = [], inspections = [], menus = [], requestedModels = [], requestedThinking = [];
   let draft = '', replies = 0;
   const controls = { holdReflection: false, reflectionStarted: false, replyFailure: undefined, reflectionFailure: false, confirmDelete: true,
-    holdInspectionDialog: false, dialogStarted: false, releaseDialog: undefined, releaseReflection: undefined };
+    holdInspectionDialog: false, dialogStarted: false, releaseDialog: undefined, releaseReflection: undefined,
+    onConfirm: undefined, lastConfirmation: undefined };
   const streamSimple = (_model, context, options) => {
     const stream = new AssistantMessageEventStream();
     queueMicrotask(() => {
@@ -84,7 +85,9 @@ async function fixture(t, existing) {
       const answer = choices.shift(); if (answer === undefined) return options[0]; return typeof answer === 'number' ? options[answer] : answer;
     },
     custom: async factory => { const component = factory({ terminal: { rows: 200 }, requestRender() {} }, { fg: (_color, text) => text }, {}, () => {}); inspections.push(component.render(200).join('\n')); },
-    input: async () => inputs.shift(), editor: async () => editors.shift(), confirm: async () => controls.confirmDelete,
+    input: async () => inputs.shift(), editor: async () => editors.shift(), confirm: async (title, message) => {
+      controls.lastConfirmation = { title, message }; await controls.onConfirm?.(); return controls.confirmDelete;
+    },
     notify: (message, level) => notices.push({ message, level }), setWidget: (key, value) => widgets.set(key, value), setStatus() {},
     setEditorText: value => { draft = value; }, getEditorText: () => draft };
   const bind = session => session.bindExtensions({ uiContext: ui, mode: 'tui', onError: error => errors.push(error),
@@ -601,6 +604,36 @@ test('episode history exposes full intervals and memory, and starts a scene in a
   await f.session.prompt('We meet in the intervening years.');
   assert.doesNotMatch(JSON.stringify(f.requests.at(-1)), /FUTURE_GAP_SECRET|I remember The future/);
   assert.match(JSON.stringify(f.requests.at(-1)), /I remember The meeting/);
+  assert.equal(f.errors.length, 0, JSON.stringify(f.errors));
+});
+
+test('gap preview warns about later corrections and explains a placement race after replacement', async t => {
+  const f = await fixture(t); await f.setup(); f.inputs.push('2000-01-01 The meeting'); await f.session.prompt('We meet.');
+  await f.command('memorize'); await f.until(() => f.inspections.some(text => text.includes('Published episode review')));
+  await f.runtime.newSession(); f.inputs.push('2030-01-01 The corrected future'); await f.session.prompt('We meet again.');
+  await f.command('memorize'); await f.until(() => f.inspections.filter(text => text.includes('Published episode review')).length === 2);
+  const previousId = f.manager.getSessionId();
+  f.choices.push('Correct a recollection', 0); f.editors.push('We met again.', 'A blue lantern.', 'I felt unsettled.');
+  f.inputs.push(extractSource(f.manager.getBranch()).messages[0].id); await f.command('memory episode');
+  f.controls.confirmDelete = false;
+  f.choices.push('Start episode in a gap', 1); f.inputs.push('2010-01-01 Between'); await f.command('chats');
+  assert.match(f.controls.lastConfirmation.message, /re-forms memory for 1 later/);
+  assert.match(f.controls.lastConfirmation.message, /Release.*The corrected future/);
+  assert.equal(f.manager.getSessionId(), previousId);
+  f.controls.confirmDelete = true;
+  f.controls.onConfirm = async () => {
+    f.controls.onConfirm = undefined;
+    const catalog = new Catalog(f.home), character = catalog.characters()[0];
+    const client = new MemoryClient({ executable, database: catalog.memoryPath, characterId: character.id,
+      readSource: async () => { throw new Error('No source'); }, infer: async () => { throw new Error('No model'); } });
+    try { await client.request('when', { episodeId: randomUUID(), position: '2010-01-01', label: 'Another window' }); }
+    finally { await client.close(); catalog.close(); }
+  };
+  f.choices.push('Start episode in a gap', 1); f.inputs.push('2010-01-01 Too late'); await f.command('chats');
+  assert.notEqual(f.manager.getSessionId(), previousId);
+  assert.match(f.widgets.get('reverie')[0], /Date not set/);
+  assert.ok(f.notices.some(item => /Episode setup did not complete:.*previous chat remains saved/.test(item.message)));
+  const catalog = new Catalog(f.home); try { assert.ok(catalog.source(previousId)); } finally { catalog.close(); }
   assert.equal(f.errors.length, 0, JSON.stringify(f.errors));
 });
 

@@ -373,26 +373,35 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
     gaps.push({ label: `After ${name(last)} · after ${new Date(last.now).toISOString()}`, after: last.now });
     const choice = await ctx.ui.select('Choose space for a new episode', gaps.map(gap => gap.label));
     const gap = gaps.find(gap => gap.label === choice); if (!gap) return;
-    const raw = await ctx.ui.input('New episode date and label (YYYY-MM-DD or zoned timestamp)');
+    const raw = await ctx.ui.input('New episode date and label (YYYY-MM-DD or YYYY-MM-DDTHH:mmZ)');
     if (!raw?.trim()) return;
     const [position, ...label] = raw.trim().split(/\s+/);
     const placed = await service!.client(character.id).request('when', { episodeId: randomUUID(), position, label: label.join(' ') || 'New episode', preview: true });
     if ((gap.after !== undefined && placed.start <= gap.after) || (gap.before !== undefined && placed.start >= gap.before)) {
       throw new Error('Choose a date strictly inside the selected gap. Existing episodes and time jumps occupy their full intervals.');
     }
-    if (!await ctx.ui.confirm('Start a new episode here?', `${placed.label} · ${new Date(placed.start).toISOString()}\n${gap.label}\nThis creates a new chat at this explicit date. Existing episodes keep their dates.`)) return;
+    const inspection = await inspectMemory(ctx, character);
+    const later = inspection.episodes.filter(item => item.episode.included && item.episode.start > placed.start);
+    const corrections = later.filter(item => item.correction).map(item => item.episode.label);
+    const consequences = later.length ? `\nMemorizing this scene re-forms memory for ${later.length} later included episode(s).${corrections.length ? ` Release the later reviewed corrections before memorizing: ${corrections.join(', ')}.` : ''}` : '';
+    if (!await ctx.ui.confirm('Start a new episode here?', `${placed.label} · ${new Date(placed.start).toISOString()}\n${gap.label}\nThis creates a new chat at this explicit date. Existing episodes keep their dates.${consequences}`)) return;
+    let setupError: unknown;
     await ctx.newSession({ setup: async manager => {
       // Session replacement retires this extension instance. Initialize Pi's new
       // manager directly and close the temporary native connection before startup.
-      const setupCatalog = new Catalog(dataHome);
-      const setupService = new MemoryService(setupCatalog, options.executable ?? executablePath(resolve(dirname(fileURLToPath(import.meta.url)), '..')),
-        async () => { throw new Error('Episode placement never calls a model.'); });
       try {
-        const dated = await setupService.client(character.id).request('when', { episodeId: manager.getSessionId(), position: placed.start, label: placed.label });
-        manager.appendCustomEntry('reverie.binding', { characterId: character.id });
-        manager.appendCustomEntry('reverie.time', { now: dated.now });
-        manager.appendSessionInfo(episodeTitle(dated, character.name));
-      } finally { await setupService.close(); setupCatalog.close(); }
+        const setupCatalog = new Catalog(dataHome);
+        const setupService = new MemoryService(setupCatalog, options.executable ?? executablePath(resolve(dirname(fileURLToPath(import.meta.url)), '..')),
+          async () => { throw new Error('Episode placement never calls a model.'); });
+        try {
+          const dated = await setupService.client(character.id).request('when', { episodeId: manager.getSessionId(), position: placed.start, label: placed.label });
+          manager.appendCustomEntry('reverie.binding', { characterId: character.id });
+          manager.appendCustomEntry('reverie.time', { now: dated.now });
+          manager.appendSessionInfo(episodeTitle(dated, character.name));
+        } finally { await setupService.close(); setupCatalog.close(); }
+      } catch (error) { setupError = error; }
+    }, withSession: async fresh => {
+      if (setupError) fresh.ui.notify(`Episode setup did not complete: ${errorMessage(setupError)} The previous chat remains saved. Use /reverie chats to resume it or choose another date.`, 'error');
     } });
   }
   async function inspectMemory(ctx: ExtensionCommandContext, character: Character): Promise<MemoryInspection> {
