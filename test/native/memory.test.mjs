@@ -195,7 +195,7 @@ test('native source revision changes during inference reject stale replacement',
   await f.request('memorize', { episodeId: 'first' });
   const before = f.contributions();
   change = true;
-  await assert.rejects(f.request('rebuild'), { code: 'STALE_SOURCE' });
+  await assert.rejects(f.request('rebuild', { force: true }), { code: 'STALE_SOURCE' });
   assert.deepEqual(f.contributions(), before);
 });
 
@@ -211,7 +211,7 @@ test('native cancellation and busy checks preserve memory while recall remains a
   await f.request('memorize', { episodeId: 'first' });
   const before = f.contributions();
   hold = true;
-  const pending = f.request('rebuild');
+  const pending = f.request('rebuild', { force: true });
   const failure = assert.rejects(pending, { code: 'CANCELLED' });
   await ready;
   await assert.rejects(f.request('rebuild'), { code: 'OPERATION_IN_PROGRESS' });
@@ -425,6 +425,33 @@ async function correctionPreview(f, id, changes = {}, extra = {}) {
     replacement: { ...item.contribution.memories[0], gist: 'The companion carried the lantern; the player spoke.', ...changes }, ...extra });
 }
 
+test('repair rebuild preserves a later correction without resampling unchanged earlier memory', async t => {
+  let sample = 0;
+  const f = fixture(t, { infer: request => {
+    const result = reflection(request); result.memories[0].detail += ` (sample ${++sample})`; return result;
+  } });
+  for (const [id, date] of [['first', '2000-01-01'], ['corrected', '2010-01-01'], ['later', '2020-01-01']]) {
+    await f.episode(id, date); await f.request('memorize', { episodeId: id });
+  }
+  const first = f.contributions()[0];
+  const preview = await correctionPreview(f, 'corrected');
+  await f.request('applyCorrection', { token: preview.token });
+  await f.restart();
+  const calls = f.calls.length;
+  assert.equal((await f.request('rebuild')).reflected, 2);
+  assert.deepEqual(f.calls.slice(calls).map(item => item.context.episodeId), ['corrected', 'later']);
+  assert.deepEqual(f.contributions()[0], first);
+  assert.deepEqual(f.contributions()[1].memories, preview.after.memories);
+  assert.equal(f.contributions()[1].impressions.length, 1);
+  assert.deepEqual(f.calls.at(-1).request.input.earlierRecollections[1].gist, preview.after.memories[0].gist);
+  assert.equal((await f.request('rebuild')).status, 'current');
+  assert.equal(f.calls.length, calls + 2);
+
+  const published = f.contributions();
+  await assert.rejects(f.request('rebuild', { force: true }), { code: 'CORRECTION_DEPENDENCIES_CHANGED' });
+  assert.deepEqual(f.contributions(), published);
+});
+
 test('reviewed correction is atomic, preserves played source and survives restart and forced rebuilding', async t => {
   const f = fixture(t);
   await f.episode('first', '2000-01-01'); await f.request('memorize', { episodeId: 'first' });
@@ -443,7 +470,7 @@ test('reviewed correction is atomic, preserves played source and survives restar
   assert.equal((await f.request('retrieve', { at: '1999-01-01' })).text, '');
   assert.equal((await f.request('retrieve', { episodeId: 'first', at: '2000-01-01' })).text, '');
   await f.restart();
-  await f.request('rebuild');
+  await f.request('rebuild', { force: true });
   assert.equal(f.contributions()[0].memories[0].gist, preview.after.memories[0].gist);
   assert.deepEqual(f.contributions()[0].memories[0].sourceMessageIds, ['first:assistant']);
   assert.equal(f.calls.at(-2).request.input.reviewedRecollections.memories[0].gist, preview.after.memories[0].gist);
