@@ -40,7 +40,7 @@ Recall-explanation records for an affected character are cleared during cleanup.
 
 ## Story portability
 
-Versioned story ZIPs contain one character's scoped catalog/native snapshot and canonical Pi sources with selected leaves. Backup captures both databases under write locks; restore validates a separate native database before publication. A local journal recovers imports interrupted between database commits. Restored Pi sessions remain canonical under the destination data directory, with relocated headers and no dependency on old paths. Account credentials and unrelated stories are excluded. See the [backup contract](story-backup.md).
+Versioned story ZIPs contain one character's scoped catalog/native snapshot and canonical Pi sources with selected leaves. Backup captures and verifies metadata under short write locks, with source I/O outside them; changes to the story abort capture. Restore validates a separate native database before publication. A journal and process-lifetime SQLite ownership lock recover interrupted imports without relying on PID liveness. Restored Pi sessions remain canonical under the destination data directory, with relocated headers and no dependency on old paths. Account credentials and unrelated stories are excluded. See the [backup contract](story-backup.md).
 
 ## Boundaries
 

@@ -48,22 +48,32 @@ async function writeDurable(path: string, text: string, created?: () => void): P
   try { await handle.writeFile(text); await handle.sync(); } finally { await handle.close(); }
 }
 
-/** Capture selected source identities and the last published memory under both database write locks. */
-export async function exportStory(catalog: Catalog, characterId: string, destination: string, cwd: string, current?: CurrentSession): Promise<void> {
-  let character = catalog.character(characterId);
+function captureStory(catalog: Catalog, characterId: string, cwd: string) {
+  const character = catalog.character(characterId);
   if (!character) throw new Error('Choose a character before exporting its story.');
+  return { character, binding: catalog.binding(cwd), model: catalog.folderModel(cwd),
+    registered: catalog.sources().filter(source => source.characterId === characterId && !source.deleted),
+    native: { revision: Number(catalog.db.prepare('SELECT revision FROM story_memory.characters WHERE id=?').get(characterId)?.revision ?? 0),
+      episodes: rows(catalog, 'episodes', characterId), contributions: rows(catalog, 'contributions', characterId),
+      memories: rows(catalog, 'memories', characterId), corrections: rows(catalog, 'corrections', characterId) },
+    recalls: catalog.db.prepare('SELECT episodeId,replyId,data FROM recalls WHERE episodeId IN (SELECT episodeId FROM sources WHERE characterId=? AND deleted=0)').all(characterId) as unknown as Story['recalls'] };
+}
+
+/** Snapshot metadata briefly, read source without write locks, then recheck the complete snapshot. */
+export async function exportStory(catalog: Catalog, characterId: string, destination: string, cwd: string, current?: CurrentSession): Promise<void> {
   attach(catalog);
   let locked = false;
   const archive: Record<string, Uint8Array> = {};
   try {
     catalog.db.exec('BEGIN IMMEDIATE'); locked = true;
-    character = catalog.character(characterId);
-    if (!character) throw new Error('The character changed before backup capture. Select it again and retry.');
-    const episodes = rows(catalog, 'episodes', characterId);
-    const registered = catalog.sources().filter(source => source.characterId === characterId && !source.deleted);
-    const ids = new Set([...registered.map(source => source.episodeId), ...episodes.map(episode => String(episode.id))]);
+    const snapshot = captureStory(catalog, characterId, cwd), signature = JSON.stringify(snapshot);
+    catalog.db.exec('COMMIT'); locked = false;
+    const { registered, character, binding, model, native, recalls } = snapshot;
+    const ids = new Set([...registered.map(source => source.episodeId), ...native.episodes.map(episode => String(episode.id))]);
     if (current && ownerOf(current.rows.slice(1) as Parameters<typeof ownerOf>[0]) === characterId) ids.add(current.id);
+    if (ids.size > 10000) throw new Error('This story exceeds the 10,000-source backup limit.');
     const sources: SavedSource[] = [], originals: { path: string; bytes: Buffer }[] = [];
+    let totalBytes = 0;
     for (const id of ids) {
       const source = registered.find(source => source.episodeId === id), active = current?.id === id ? current : undefined;
       if (!source && !active) throw new Error(`Episode ${id} has no Pi source. Resume its setup or restore its original session file before backing up.`);
@@ -76,20 +86,21 @@ export async function exportStory(catalog: Catalog, characterId: string, destina
       const parentEpisodeId = typeof _parent === 'string' ? registered.find(candidate => resolve(candidate.path) === resolve(_parent))?.episodeId : undefined;
       parsed[0] = { ...header, cwd: '.' };
       const file = `sources/${sources.length}.jsonl`, portable = Buffer.from(parsed.map(row => JSON.stringify(row)).join('\n') + '\n');
+      totalBytes += portable.length;
+      if (totalBytes > LIMIT) throw new Error('This story exceeds the 256 MiB backup limit.');
       archive[file] = portable; sources.push({ episodeId: id, file, leaf, sha256: hash(portable), ...(parentEpisodeId ? { parentEpisodeId } : {}) });
       if (!active) originals.push({ path: source!.path, bytes });
     }
     // Detect replacement/deletion or non-append source edits during capture.
     for (const source of originals) if (!(await readFile(source.path)).equals(source.bytes)) throw new Error('Played source changed during backup. Finish the current turn and try again.');
-    const binding = catalog.binding(cwd);
     const story: Story = { format: 'reverie-story', version: 1, createdAt: new Date().toISOString(), character,
-      roleplay: { enabled: binding?.characterId === characterId ? binding.enabled : true, model: catalog.folderModel(cwd) }, sources,
-      native: { revision: Number(catalog.db.prepare('SELECT revision FROM story_memory.characters WHERE id=?').get(characterId)?.revision ?? 0),
-        episodes, contributions: rows(catalog, 'contributions', characterId), memories: rows(catalog, 'memories', characterId), corrections: rows(catalog, 'corrections', characterId) },
-      recalls: catalog.db.prepare('SELECT episodeId,replyId,data FROM recalls WHERE episodeId IN (SELECT episodeId FROM sources WHERE characterId=? AND deleted=0)').all(characterId) as unknown as Story['recalls'] };
+      roleplay: { enabled: binding?.characterId === characterId ? binding.enabled : true, model }, sources, native, recalls };
     archive['story.json'] = Buffer.from(JSON.stringify(story));
+    if (archive['story.json'].length > FILE_LIMIT) throw new Error('This story exceeds the 64 MiB manifest limit.');
     archive['checksums.json'] = Buffer.from(JSON.stringify({ storySha256: hash(archive['story.json']) }));
     if (Object.values(archive).reduce((total, data) => total + data.length, 0) > LIMIT) throw new Error('This story exceeds the 256 MiB backup limit.');
+    catalog.db.exec('BEGIN IMMEDIATE'); locked = true;
+    if (JSON.stringify(captureStory(catalog, characterId, cwd)) !== signature) throw new Error('Story memory or source selection changed during backup. Finish the current operation and try again.');
     catalog.db.exec('COMMIT'); locked = false;
   } finally { if (locked) catalog.db.exec('ROLLBACK'); catalog.db.exec('DETACH DATABASE story_memory'); }
   const bytes = zipSync(archive, { level: 6 });
@@ -168,31 +179,54 @@ function importPath(catalog: Catalog, id: string): string {
   if (!uuid(id) || dirname(target) !== root) throw new Error('Invalid restore staging directory.');
   return target;
 }
+function lockRestore(catalog: Catalog, characterId: string): DatabaseSync | undefined {
+  if (!uuid(characterId)) throw new Error('Invalid restore identity.');
+  const lock = new DatabaseSync(join(catalog.directory, `restore-lock-${characterId}.sqlite`));
+  try { lock.exec('PRAGMA busy_timeout=0; BEGIN EXCLUSIVE'); return lock; }
+  catch (error) {
+    lock.close();
+    if (record(error) && (error.errcode === 5 || error.errcode === 6)) return;
+    throw new Error('Cannot acquire the story restore lock. Check access to the Reverie data directory.', { cause: error });
+  }
+}
+function unlockRestore(lock: DatabaseSync): void {
+  try { lock.exec('ROLLBACK'); } finally { lock.close(); }
+}
 /** Recover only interrupted restores; live processes retain their import locks. */
 export function recoverStoryRestores(catalog: Catalog): void {
   for (const name of readdirSync(catalog.directory).filter(name => /^restore-[\da-f-]{36}\.json$/.test(name))) {
-    const marker = join(catalog.directory, name), value: unknown = JSON.parse(readFileSync(marker, 'utf8'));
-    if (!record(value) || !uuid(value.characterId) || name !== `restore-${value.characterId}.json` || !uuid(value.directory) || typeof value.cwd !== 'string' || !Number.isInteger(value.pid) || Number(value.pid) <= 0) throw new Error('A story restore journal is damaged. Preserve the data folder and recover it before restoring another story.');
-    const journal = value as unknown as RestoreJournal;
-    try { process.kill(journal.pid, 0); continue; } catch { /* Original restore process has exited. */ }
-    attach(catalog); let locked = false;
+    const characterId = name.slice('restore-'.length, -'.json'.length), owner = lockRestore(catalog, characterId);
+    if (!owner) continue;
     try {
-      catalog.db.exec('BEGIN IMMEDIATE'); locked = true;
-      const complete = catalog.character(journal.characterId) && catalog.db.prepare('SELECT id FROM story_memory.characters WHERE id=?').get(journal.characterId);
-      if (!complete) {
-        for (const table of ['memories', 'contributions', 'corrections', 'episodes']) catalog.db.prepare(`DELETE FROM story_memory.${table} WHERE character_id=?`).run(journal.characterId);
-        catalog.db.prepare('DELETE FROM story_memory.characters WHERE id=?').run(journal.characterId);
-        catalog.db.prepare('DELETE FROM recalls WHERE episodeId IN (SELECT episodeId FROM sources WHERE characterId=?)').run(journal.characterId);
-        catalog.db.prepare('DELETE FROM sources WHERE characterId=?').run(journal.characterId);
-        catalog.db.prepare('DELETE FROM folders WHERE characterId=?').run(journal.characterId);
-        catalog.db.prepare('DELETE FROM characters WHERE id=?').run(journal.characterId);
-        if (journal.previousModel) catalog.db.prepare('INSERT OR REPLACE INTO folder_models VALUES(?,?,?,?)').run(journal.cwd, journal.previousModel.provider, journal.previousModel.modelId, journal.previousModel.thinkingLevel ?? null);
-        else catalog.db.prepare('DELETE FROM folder_models WHERE cwd=?').run(journal.cwd);
-        // The journal stores only a validated UUID, never an archive-controlled path.
-        rmSync(importPath(catalog, journal.directory), { recursive: true, force: true });
+      const marker = join(catalog.directory, name);
+      let value: unknown;
+      try { value = JSON.parse(readFileSync(marker, 'utf8')); }
+      catch (error) {
+        if (error instanceof SyntaxError) { unlinkSync(marker); continue; }
+        if (record(error) && error.code === 'ENOENT') continue;
+        throw new Error('Cannot read the story restore journal. Check access to the Reverie data directory.', { cause: error });
       }
-      catalog.db.exec('COMMIT'); locked = false; unlinkSync(marker);
-    } finally { if (locked) catalog.db.exec('ROLLBACK'); catalog.db.exec('DETACH DATABASE story_memory'); }
+      if (!record(value) || value.characterId !== characterId || !uuid(value.directory) || typeof value.cwd !== 'string' || !Number.isInteger(value.pid) || Number(value.pid) <= 0) throw new Error('A story restore journal is damaged. Preserve the data folder and recover it before restoring another story.');
+      const journal = value as unknown as RestoreJournal;
+      attach(catalog); let locked = false;
+      try {
+        catalog.db.exec('BEGIN IMMEDIATE'); locked = true;
+        const complete = catalog.character(journal.characterId) && catalog.db.prepare('SELECT id FROM story_memory.characters WHERE id=?').get(journal.characterId);
+        if (!complete) {
+          for (const table of ['memories', 'contributions', 'corrections', 'episodes']) catalog.db.prepare(`DELETE FROM story_memory.${table} WHERE character_id=?`).run(journal.characterId);
+          catalog.db.prepare('DELETE FROM story_memory.characters WHERE id=?').run(journal.characterId);
+          catalog.db.prepare('DELETE FROM recalls WHERE episodeId IN (SELECT episodeId FROM sources WHERE characterId=?)').run(journal.characterId);
+          catalog.db.prepare('DELETE FROM sources WHERE characterId=?').run(journal.characterId);
+          catalog.db.prepare('DELETE FROM folders WHERE characterId=?').run(journal.characterId);
+          catalog.db.prepare('DELETE FROM characters WHERE id=?').run(journal.characterId);
+          if (journal.previousModel) catalog.db.prepare('INSERT OR REPLACE INTO folder_models VALUES(?,?,?,?)').run(journal.cwd, journal.previousModel.provider, journal.previousModel.modelId, journal.previousModel.thinkingLevel ?? null);
+          else catalog.db.prepare('DELETE FROM folder_models WHERE cwd=?').run(journal.cwd);
+          // The journal stores only a validated UUID, never an archive-controlled path.
+          rmSync(importPath(catalog, journal.directory), { recursive: true, force: true });
+        }
+        catalog.db.exec('COMMIT'); locked = false; unlinkSync(marker);
+      } finally { if (locked) catalog.db.exec('ROLLBACK'); catalog.db.exec('DETACH DATABASE story_memory'); }
+    } finally { unlockRestore(owner); }
   }
 }
 
@@ -206,7 +240,7 @@ export async function restoreStory(catalog: Catalog, archive: string, cwd: strin
   if (catalog.binding(cwd)) throw new Error('This folder is already linked. Open an unlinked folder before restoring a story.');
   const directory = randomUUID(), target = importPath(catalog, directory), database = join(target, 'validation.sqlite');
   await mkdir(target, { recursive: true });
-  let committed = false, journal: string | undefined, journalOwned = false;
+  let committed = false, journal: string | undefined, journalOwned = false, owner: DatabaseSync | undefined;
   try {
     const paths = new Map(story.sources.map((source, index) => [source.episodeId, join(target, `${index}.jsonl`)]));
     for (const source of story.sources) {
@@ -237,6 +271,8 @@ export async function restoreStory(catalog: Catalog, archive: string, cwd: strin
       readSource: async () => { throw new Error('Source is not read during database initialization.'); },
       infer: async () => { throw new Error('Restore does not call a model.'); } });
     try { await initializer.request('ping'); } finally { await initializer.close(); }
+    owner = lockRestore(catalog, story.character.id);
+    if (!owner) throw new Error('Another restore of this character is running. Wait for it to finish before retrying.');
     attach(catalog); let locked = false;
     try {
       catalog.db.exec('BEGIN IMMEDIATE'); locked = true;
@@ -258,5 +294,8 @@ export async function restoreStory(catalog: Catalog, archive: string, cwd: strin
     await rm(journal, { force: true }); journal = undefined;
     return story.character;
   } catch (error) { throw new Error(`Restore failed: ${String(error)}${committed ? ' The story was saved; its restore journal will be checked on restart.' : ' No story was restored.'}`); }
-  finally { if (!committed) { await rm(importPath(catalog, directory), { recursive: true, force: true }); if (journal && journalOwned) await rm(journal, { force: true }); } }
+  finally {
+    try { if (!committed) { await rm(importPath(catalog, directory), { recursive: true, force: true }); if (journal && journalOwned) await rm(journal, { force: true }); } }
+    finally { if (owner) unlockRestore(owner); }
+  }
 }

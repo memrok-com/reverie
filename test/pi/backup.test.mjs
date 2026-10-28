@@ -154,7 +154,7 @@ test('restore rolls back both databases and removes staged files when publicatio
   await assert.rejects(restoreStory(d.catalog, f.archive, d.cwd, executable), /simulated publication failure/);
   assert.deepEqual(d.catalog.characters(), []); assert.deepEqual(d.catalog.sources(), []);
   assert.deepEqual(await readdir(join(d.home, 'restored')), []);
-  assert.ok(!(await readdir(d.home)).some(name => name.startsWith('restore-')));
+  assert.ok(!(await readdir(d.home)).some(name => /^restore-.*\.json$/.test(name)));
   const db = new DatabaseSync(d.catalog.memoryPath);
   try { assert.equal(db.prepare('SELECT COUNT(*) AS n FROM characters').get().n, 0); } finally { db.close(); }
 });
@@ -163,21 +163,25 @@ test('a live restore journal is never overwritten or removed by a second import'
   const f = await fixture(t); await exportStory(f.catalog, f.character.id, f.archive, f.cwd);
   const d = await destination(t, f.root), marker = join(d.home, `restore-${f.character.id}.json`);
   const value = JSON.stringify({ characterId: f.character.id, directory: randomUUID(), cwd: d.cwd, pid: process.pid });
-  await writeFile(marker, value);
-  await assert.rejects(restoreStory(d.catalog, f.archive, d.cwd, executable), /EEXIST/);
+  const owner = new DatabaseSync(join(d.home, `restore-lock-${f.character.id}.sqlite`));
+  owner.exec('BEGIN EXCLUSIVE');
+  try {
+    await writeFile(marker, value);
+    await assert.rejects(restoreStory(d.catalog, f.archive, d.cwd, executable), /Another restore/);
+  } finally { owner.exec('ROLLBACK'); owner.close(); }
   assert.equal(await readFile(marker, 'utf8'), value);
   assert.deepEqual(d.catalog.characters(), []); assert.deepEqual(d.catalog.sources(), []);
   assert.deepEqual(await readdir(join(d.home, 'restored')), []);
 });
 
-test('startup recovers a restore interrupted between database commits', async t => {
+test('startup recovers an interrupted restore even if its recorded PID is now alive', async t => {
   const f = await fixture(t), home = join(f.root, 'interrupted-data'), cwd = join(f.root, 'interrupted-folder');
   await mkdir(cwd); const catalog = new Catalog(home), service = new MemoryService(catalog, executable, async () => { throw new Error('No model'); });
   await service.client(f.character.id).request('ping'); await service.close();
   const directory = randomUUID(), target = join(home, 'restored', directory); await mkdir(target, { recursive: true }); await writeFile(join(target, '0.jsonl'), 'partial');
   const db = new DatabaseSync(catalog.memoryPath);
   db.prepare('INSERT INTO characters(id,revision) VALUES(?,0)').run(f.character.id); db.close();
-  await writeFile(join(home, `restore-${f.character.id}.json`), JSON.stringify({ characterId: f.character.id, directory, cwd, pid: 2147483647 }));
+  await writeFile(join(home, `restore-${f.character.id}.json`), JSON.stringify({ characterId: f.character.id, directory, cwd, pid: process.pid }));
   catalog.close();
   const recovered = new Catalog(home);
   try {
@@ -185,6 +189,59 @@ test('startup recovers a restore interrupted between database commits', async t 
     const native = new DatabaseSync(recovered.memoryPath);
     try { assert.equal(native.prepare('SELECT COUNT(*) AS n FROM characters').get().n, 0); } finally { native.close(); }
     assert.deepEqual(await readdir(join(home, 'restored')), []);
-    assert.ok(!(await readdir(home)).some(name => name.startsWith('restore-')));
+    assert.ok(!(await readdir(home)).some(name => /^restore-.*\.json$/.test(name)));
   } finally { recovered.close(); }
+});
+
+test('startup discards empty or truncated pre-commit journals without blocking ordinary catalog use', async () => {
+  const home = resolve('.work/backup-tests', randomUUID(), 'data');
+  const first = new Catalog(home), character = first.create('Existing', 'Preserve this story.'); first.close();
+  for (const partial of ['', '{', '{"characterId":']) await writeFile(join(home, `restore-${randomUUID()}.json`), partial);
+  const recovered = new Catalog(home);
+  try {
+    assert.equal(recovered.character(character.id).persona, character.persona);
+    assert.ok(!(await readdir(home)).some(name => /^restore-.*\.json$/.test(name)));
+  } finally { recovered.close(); }
+});
+
+test('a live ownership lock protects a journal while its JSON is still being written', async () => {
+  const home = resolve('.work/backup-tests', randomUUID(), 'data'), id = randomUUID();
+  const initial = new Catalog(home); initial.close();
+  const owner = new DatabaseSync(join(home, `restore-lock-${id}.sqlite`)), marker = join(home, `restore-${id}.json`);
+  owner.exec('BEGIN EXCLUSIVE');
+  try {
+    await writeFile(marker, '{');
+    const observer = new Catalog(home); observer.close();
+    assert.equal(await readFile(marker, 'utf8'), '{');
+  } finally { owner.exec('ROLLBACK'); owner.close(); }
+  const recovered = new Catalog(home); recovered.close();
+  await assert.rejects(readFile(marker), { code: 'ENOENT' });
+});
+
+test('source reads during export do not hold database write locks against unrelated writers', async t => {
+  const f = await fixture(t), pending = exportStory(f.catalog, f.character.id, f.archive, f.cwd);
+  const native = new DatabaseSync(f.catalog.memoryPath), catalog = new DatabaseSync(join(f.catalog.directory, 'catalog.sqlite'));
+  let writerError;
+  try {
+    native.exec('PRAGMA busy_timeout=0; BEGIN IMMEDIATE');
+    native.prepare('INSERT INTO characters(id,revision) VALUES(?,0)').run(randomUUID()); native.exec('COMMIT');
+    catalog.exec("PRAGMA busy_timeout=0; BEGIN IMMEDIATE; INSERT INTO preferences VALUES('unrelated-window','ok'); COMMIT");
+  } catch (error) { writerError = error; }
+  finally { native.close(); catalog.close(); }
+  await pending;
+  assert.equal(writerError, undefined);
+});
+
+test('export detects memory changes during unlocked source capture and publishes no archive', async t => {
+  const f = await fixture(t), pending = exportStory(f.catalog, f.character.id, f.archive, f.cwd), native = new DatabaseSync(f.catalog.memoryPath);
+  let writerError;
+  try {
+    native.exec('PRAGMA busy_timeout=0');
+    native.prepare('UPDATE characters SET revision=revision+1 WHERE id=?').run(f.character.id);
+  } catch (error) { writerError = error; }
+  finally { native.close(); }
+  const [result] = await Promise.allSettled([pending]);
+  assert.equal(writerError, undefined);
+  assert.equal(result.status, 'rejected'); assert.match(result.reason.message, /Story memory or source selection changed/);
+  await assert.rejects(readFile(f.archive), { code: 'ENOENT' });
 });
