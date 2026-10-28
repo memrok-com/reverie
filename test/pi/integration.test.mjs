@@ -26,7 +26,8 @@ async function fixture(t, existing) {
   await mkdir(cwd, { recursive: true }); await mkdir(agentDir, { recursive: true });
   const inputs = [], editors = [], choices = [], notices = [], widgets = new Map(), requests = [], errors = [], inspections = [], requestedModels = [], requestedThinking = [];
   let draft = '', replies = 0;
-  const controls = { holdReflection: false, reflectionStarted: false, replyFailure: undefined, reflectionFailure: false, confirmDelete: true };
+  const controls = { holdReflection: false, reflectionStarted: false, replyFailure: undefined, reflectionFailure: false, confirmDelete: true,
+    holdInspectionDialog: false, dialogStarted: false, releaseDialog: undefined, releaseReflection: undefined };
   const streamSimple = (_model, context, options) => {
     const stream = new AssistantMessageEventStream();
     queueMicrotask(() => {
@@ -49,17 +50,21 @@ async function fixture(t, existing) {
         reply.errorMessage = controls.replyFailure === 'aborted' ? 'Cancelled' : 'OAuth refresh failed (fixture)';
         stream.push({ type: 'error', reason: controls.replyFailure, error: reply }); stream.end(); return;
       }
+      const finish = () => {
+        stream.push({ type: 'start', partial: reply });
+        stream.push({ type: 'text_start', contentIndex: 0, partial: reply });
+        stream.push({ type: 'text_delta', contentIndex: 0, delta: text, partial: reply });
+        stream.push({ type: 'text_end', contentIndex: 0, content: text, partial: reply });
+        stream.push({ type: 'done', reason: 'stop', message: reply }); stream.end();
+      };
       if (input?.episode && controls.holdReflection) {
         controls.reflectionStarted = true;
+        controls.releaseReflection = finish;
         const abort = () => { reply.stopReason = 'aborted'; reply.errorMessage = 'Cancelled'; stream.push({ type: 'error', reason: 'aborted', error: reply }); stream.end(); };
         if (options?.signal?.aborted) abort(); else options?.signal?.addEventListener('abort', abort, { once: true });
         return;
       }
-      stream.push({ type: 'start', partial: reply });
-      stream.push({ type: 'text_start', contentIndex: 0, partial: reply });
-      stream.push({ type: 'text_delta', contentIndex: 0, delta: text, partial: reply });
-      stream.push({ type: 'text_end', contentIndex: 0, content: text, partial: reply });
-      stream.push({ type: 'done', reason: 'stop', message: reply }); stream.end();
+      finish();
     });
     return stream;
   };
@@ -73,7 +78,11 @@ async function fixture(t, existing) {
   };
   const manager = existing?.path ? SessionManager.open(existing.path) : SessionManager.create(cwd, resolve(cwd, 'sessions'));
   const runtime = await createAgentSessionRuntime(createRuntime, { cwd, agentDir, sessionManager: manager });
-  const ui = { select: async (title, options) => { inspections.push(title); const answer = choices.shift(); if (answer === undefined) return options[0]; return typeof answer === 'number' ? options[answer] : answer; },
+  const ui = { select: async (title, options) => {
+      inspections.push(title);
+      if (controls.holdInspectionDialog && title === 'Inspect episode memory') { controls.dialogStarted = true; return new Promise(resolve => { controls.releaseDialog = resolve; }); }
+      const answer = choices.shift(); if (answer === undefined) return options[0]; return typeof answer === 'number' ? options[answer] : answer;
+    },
     custom: async factory => { const component = factory({ terminal: { rows: 200 }, requestRender() {} }, { fg: (_color, text) => text }, {}, () => {}); inspections.push(component.render(200).join('\n')); },
     input: async () => inputs.shift(), editor: async () => editors.shift(), confirm: async () => controls.confirmDelete,
     notify: (message, level) => notices.push({ message, level }), setWidget: (key, value) => widgets.set(key, value), setStatus() {},
@@ -595,6 +604,25 @@ test('memorization reviews published results, keeps unchanged memory accessible 
   f.inputs.push(extractSource(f.manager.getBranch()).messages[0].id);
   await f.command(`memory episode ${f.manager.getSessionId()}`);
   assert.ok(f.notices.some(item => item.message.startsWith('Correction applied.')));
+  assert.equal(f.errors.length, 0, JSON.stringify(f.errors));
+});
+
+test('published review does not open over another Reverie dialog, and unknown episode IDs have a neutral explanation', async t => {
+  const f = await fixture(t); await f.setup();
+  await f.command('memory episode'); assert.match(f.notices.at(-1).message, /No dated episode with that ID/);
+  f.inputs.push('2000-01-01 The lighthouse'); await f.session.prompt('We meet.');
+  f.controls.holdReflection = true; await f.command('memorize'); await f.until(() => f.controls.reflectionStarted);
+  f.controls.holdInspectionDialog = true;
+  const browsing = f.command('memory browse');
+  try {
+    await f.until(() => f.controls.dialogStarted);
+    f.controls.releaseReflection();
+    await f.until(() => f.notices.some(item => item.message.startsWith('Review saved recollections')));
+    assert.ok(!f.inspections.some(text => text.includes('Published episode review')));
+  } finally { f.controls.releaseDialog?.(); await browsing; }
+  f.controls.holdInspectionDialog = false;
+  f.choices.push('Read recollections'); await f.command('memory episode');
+  assert.match(f.inspections.at(-1), /I remember The lighthouse/);
   assert.equal(f.errors.length, 0, JSON.stringify(f.errors));
 });
 

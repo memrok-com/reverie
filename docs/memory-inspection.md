@@ -2,6 +2,8 @@
 
 Inspection is a player-only view of published episode contributions. It reads every stored recollection and each episode's broader-impression snapshot without a retrieval cue, ranking limit, detail fading, or model call. Eligibility at a chosen episode/date is a separate chronological flag, not evidence that an item was supplied to a reply. Explain last recall remains the saved record of that reply's actual context. Source excerpts are read from the selected played branch on demand, retain player/companion authorship and literal action/dialogue text, and are never copied into memory storage.
 
+Successful memorization opens the complete published recollections and the separate broader-impression snapshot, including unchanged results. `/reverie memory episode [id]` provides direct sources, corrections and resume actions for that episode. If another Reverie command/dialog is active at completion, the result is offered through this command without opening another modal. Switching Pi sessions cancels in-flight memorization in Pi 1.3.0; failed/cancelled operations never open an unpublished result.
+
 ## Correction contract
 
 Corrections repair factual or attribution errors in inspected recollections. They are explicit player edits, not automatic judgments about the companion's subjective feelings. The editor preserves feelings and uncertainty unless the player deliberately changes them. It never edits played source or moves an episode's fictional date.
