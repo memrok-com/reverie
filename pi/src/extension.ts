@@ -293,9 +293,13 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
     const episodeId = ctx.sessionManager.getSessionId();
     if (action === 'regenerate') {
       if (!ctx.hasUI) throw new Error('Regeneration needs interactive Pi or an RPC client with confirmation dialogs.');
-      const before = await client.request('status');
-      const count = before.episodes.filter(item => item.included).length;
+      const before = await inspectMemory(ctx, character);
+      const included = before.episodes.filter(item => item.episode.included);
+      const count = included.length;
       if (!count) { ctx.ui.notify('No included episodes to regenerate. Memorize an episode first.', 'info'); return; }
+      // Later corrections pin a prefix that forced regeneration resamples. Check
+      // every included episode now, before paid calls or a misleading confirmation.
+      const blockers = included.slice(1).filter(item => item.correction);
       const model = JSON.parse(modelKey) as { provider: string; model: string; thinking: ThinkingLevel };
       await show(ctx, 'Review full memory regeneration', [
         `Character: ${character.name}`,
@@ -303,9 +307,19 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
         `Thinking level: ${model.thinking}`,
         `Regenerate all ${count} included episode${count === 1 ? '' : 's'} from their selected branches. Withdrawn episodes stay excluded.`,
         'This makes new model calls, may incur provider costs, and can change existing recollections and impressions.',
-        'Reviewed recollections are preserved. A later correction may block regeneration if its earlier memory changes; corrections are never released automatically.',
+        'Reviewed recollections are preserved; corrections are never released automatically.',
+        ...(blockers.length ? [
+          'Regeneration is blocked by reviewed corrections in these later included episodes:',
+          ...blockers.map(item => `${episodeTitle(item.episode, character.name)}\nInspect: /reverie memory episode ${item.episode.id}`),
+          'These corrections depend on earlier memory that full regeneration resamples. To avoid spending model calls on an unpublished result, regeneration will not start until they are explicitly released.',
+          'Inspect the listed episodes and their sources, choose Release correction, and approve its separate invalidation preview. Releasing discards reviewed wording and can release dependent corrections; inspect the preview before approving. Then run /reverie regenerate again. Keep your corrections and use /reverie rebuild for ordinary repair if you prefer.',
+        ] : []),
         'Cancel during work with /reverie cancel. Cancellation or failure retains the last published memory.',
       ].join('\n\n'));
+      if (blockers.length) {
+        ctx.ui.notify('Regeneration not started. No model calls were made. Inspect the listed later episodes and explicitly release their corrections before trying again. Last published memory is retained.', 'warning');
+        return;
+      }
       if (!await ctx.ui.confirm('Regenerate with current model?',
         `${character.name}: all ${count} included episode${count === 1 ? '' : 's'}.\n${model.provider}/${model.model} · Thinking ${model.thinking}\nNew model calls may incur costs and change recollections/impressions. Proceed?`)) return;
       // The confirmation approves this character and scope, using the captured route.

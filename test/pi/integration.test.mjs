@@ -131,6 +131,11 @@ async function memorizeEpisode(f, date, label) {
   return f.manager.getSessionId();
 }
 
+async function correctCurrentMemory(f) {
+  f.choices.push('Correct a recollection', 0); f.editors.push('The player held the lantern.', 'A blue lantern.', 'I felt unsettled.');
+  f.inputs.push(extractSource(f.manager.getBranch()).messages[0].id); await f.command('memory episode');
+}
+
 test('regeneration with no included episodes explains that memorization is needed without a confirmation or model call', async t => {
   const f = await fixture(t); await f.setup();
   await f.command('regenerate');
@@ -228,34 +233,58 @@ test('cancelled or failed regeneration after staging an earlier episode preserve
   assert.equal(f.errors.length, 0, JSON.stringify(f.errors));
 });
 
-test('regeneration preserves reviewed recollections and explains a later correction blocker without publishing or releasing it', async t => {
+test('regeneration preserves the first included correction and lists all later corrections before any confirmation or model calls', async t => {
   const f = await fixture(t); await f.setup();
+  await legacyDate(f, randomUUID(), '1990-01-01', 'Unplayed draft');
   const firstId = await memorizeEpisode(f, '2000-01-01', 'First');
-  const correct = async () => {
-    f.choices.push('Correct a recollection', 0); f.editors.push('The player held the lantern.', 'A blue lantern.', 'I felt unsettled.');
-    f.inputs.push(extractSource(f.manager.getBranch()).messages[0].id); await f.command('memory episode');
-  };
-  await correct();
-  const reviewed = (await memorySnapshot(f)).episodes[0];
+  await correctCurrentMemory(f);
+  const reviewed = (await memorySnapshot(f)).episodes.find(item => item.episode.id === firstId);
   await f.command('regenerate'); await f.until(() => f.notices.some(item => item.message.startsWith('Memory regenerated:')));
-  const first = (await memorySnapshot(f)).episodes[0];
+  const first = (await memorySnapshot(f)).episodes.find(item => item.episode.id === firstId);
   assert.deepEqual(first.contribution.memories, reviewed.contribution.memories);
   assert.deepEqual(first.correction, reviewed.correction);
-  await memorizeEpisode(f, '2010-01-01', 'Second'); await correct();
-  const before = await memorySnapshot(f), calls = f.requests.length;
-  f.controls.reflect = request => { const result = reflection(request); result.impressions[0].text += ' A changed impression.'; return result; };
-  await f.command('regenerate');
-  await f.until(() => f.notices.some(item => item.level === 'error' && /Earlier memory changed beneath/.test(item.message)));
-  assert.equal(f.requests.length, calls + 1, 'Regeneration stops before rewriting the later reviewed contribution.');
-  assert.deepEqual(await memorySnapshot(f), before);
-  assert.match(f.notices.at(-1).message, /Last published memory is retained.*\/reverie memory browse.*Release correction.*invalidation preview.*\/reverie regenerate/);
   assert.match(JSON.stringify(f.requests.at(-1)), /reviewedRecollections/);
+  const secondId = await memorizeEpisode(f, '2010-01-01', 'Second'); await correctCurrentMemory(f);
+  const thirdId = await memorizeEpisode(f, '2020-01-01', 'Third'); await correctCurrentMemory(f);
+  const before = await memorySnapshot(f), calls = f.requests.length;
+  assert.equal(before.episodes.filter(item => item.correction).length, 3);
+  f.controls.lastConfirmation = undefined;
+  f.controls.onConfirm = async () => assert.fail('A blocked regeneration must not request confirmation.');
+  await f.command('regenerate');
+  assert.equal(f.requests.length, calls, 'Every later correction is identified before spending on earlier reflections.');
+  assert.equal(f.controls.lastConfirmation, undefined);
+  assert.deepEqual(await memorySnapshot(f), before);
+  const preview = f.inspections.filter(text => text.includes('Review full memory regeneration')).at(-1);
+  assert.match(preview, /Regeneration is blocked by reviewed corrections/);
+  assert.match(preview, /2010-01-01 · Second/); assert.match(preview, /2020-01-01 · Third/);
+  assert.ok(preview.includes(`/reverie memory episode ${secondId}`));
+  assert.ok(preview.includes(`/reverie memory episode ${thirdId}`));
+  assert.ok(!preview.includes(`/reverie memory episode ${firstId}`), 'The first included correction is not a blocker.');
+  assert.match(preview, /Release correction.*invalidation preview.*\/reverie regenerate/s);
+  assert.match(f.notices.at(-1).message, /No model calls were made.*Last published memory is retained/);
   const path = f.manager.getSessionFile(); await f.close();
   const restarted = await fixture(t, { root: f.root, path });
   const durable = await memorySnapshot(restarted);
   assert.deepEqual(durable, before);
   assert.equal(durable.episodes.find(item => item.episode.id === firstId).correction.memories[0].gist, 'The player held the lantern.');
   assert.equal(f.errors.length + restarted.errors.length, 0, JSON.stringify([...f.errors, ...restarted.errors]));
+});
+
+test('withdrawn corrections stay excluded while the first included correction can regenerate', async t => {
+  const f = await fixture(t); await f.setup();
+  const withdrawnId = await memorizeEpisode(f, '2000-01-01', 'Withdrawn'); await correctCurrentMemory(f);
+  const updates = f.notices.filter(item => item.message.startsWith('Memory updated:')).length;
+  await f.command('unmemorize');
+  await f.until(() => f.notices.filter(item => item.message.startsWith('Memory updated:')).length === updates + 1);
+  const firstId = await memorizeEpisode(f, '2010-01-01', 'First included'); await correctCurrentMemory(f);
+  const before = await memorySnapshot(f), calls = f.requests.length;
+  assert.ok(before.episodes.find(item => item.episode.id === withdrawnId).correction);
+  await f.command('regenerate'); await f.until(() => f.notices.some(item => item.message.startsWith('Memory regenerated:')));
+  const after = await memorySnapshot(f);
+  assert.equal(f.requests.length, calls + 1);
+  assert.deepEqual(after.episodes.find(item => item.episode.id === withdrawnId), before.episodes.find(item => item.episode.id === withdrawnId));
+  assert.deepEqual(after.episodes.find(item => item.episode.id === firstId).contribution.memories, before.episodes.find(item => item.episode.id === firstId).contribution.memories);
+  assert.equal(f.errors.length, 0, JSON.stringify(f.errors));
 });
 
 test('regeneration rejects a changed preview scope before making model calls', async t => {
