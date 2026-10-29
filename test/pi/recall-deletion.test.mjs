@@ -1,13 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, rm } from 'node:fs/promises';
+import { mkdir, readFile, rm } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
+import { unzipSync } from 'fflate';
 import { Catalog } from '../../.work/pi-test/catalog.mjs';
 import { MemoryService } from '../../.work/pi-test/service.mjs';
 import { extractSource, sourceHash } from '../../.work/pi-test/source.mjs';
 import { recallHistory } from '../../.work/pi-test/recall-history.mjs';
+import { exportStory } from '../../.work/pi-test/story-backup.mjs';
 import { reflection } from '../fixtures/subjective.mjs';
 import { nativeEnginePath } from '../../scripts/lib/native-toolchain.mjs';
 
@@ -118,7 +120,7 @@ test('cleanup follows both published and current starts when episode dates have 
   assert.equal(f.catalog.recall(d.reply, d.id), undefined);
 });
 
-test('a persisted cleanup plan survives restart between native deletion and catalog acknowledgment', async t => {
+for (const format of ['current', 'legacy']) test(`a persisted ${format} cleanup plan survives restart between native deletion and catalog acknowledgment`, async t => {
   const f = await fixture(t);
   await f.episode('A', '2000-01-01');
   const b = await f.episode('B', '2010-01-01'), c = await f.episode('C', '2020-01-01');
@@ -128,6 +130,10 @@ test('a persisted cleanup plan survives restart between native deletion and cata
   await assert.rejects(f.service.forget(c.id, f.character.id), /Simulated interruption/);
   assert.equal(f.catalog.source(c.id).deleted, 1);
   assert.ok(!(await f.client.request('status')).episodes.some(item => item.id === c.id));
+  if (format === 'legacy') {
+    const plan = JSON.parse(f.catalog.db.prepare('SELECT affected FROM recall_deletions WHERE episodeId=?').get(c.id).affected);
+    f.catalog.db.prepare('UPDATE recall_deletions SET affected=? WHERE episodeId=?').run(JSON.stringify(plan.episodeIds), c.id);
+  }
   await f.close();
   const catalog = new Catalog(f.home), service = new MemoryService(catalog, nativeEnginePath(), f.infer);
   t.after(async () => { await service.close(); catalog.close(); });
@@ -140,6 +146,113 @@ test('a persisted cleanup plan survives restart between native deletion and cata
   assert.equal((await client.request('rebuild')).reflected, 1);
   assert.deepEqual(f.calls.slice(calls), ['D']);
   assert.deepEqual((await client.request('inspect')).episodes.find(item => item.episode.id === b.id).contribution, before);
+});
+
+for (const cause of ['withdrawal', 'correction', 'native deletion']) test(`deleting an episode after ${cause} removes its saved prose from explanations and backup`, async t => {
+  const f = await fixture(t);
+  const root = await f.episode('Root', '1990-01-01'), a = await f.episode('A', '2000-01-01');
+  const b = await f.episode('B', '2010-01-01', { memorize: false });
+  assert.ok(JSON.stringify(b.recall).includes('I remember A.'));
+  if (cause === 'withdrawal') await f.client.request('unmemorize', { episodeId: a.id });
+  else if (cause === 'native deletion') await f.client.request('forget', { episodeId: root.id });
+  else {
+    const inspection = await f.client.request('inspect');
+    const memory = inspection.episodes.find(item => item.episode.id === root.id).contribution.memories[0];
+    const preview = await f.client.request('previewCorrection', { episodeId: root.id, revision: inspection.revision,
+      memoryIndex: 0, replacement: { ...memory, gist: 'The player brought the lantern; I accepted it.' } });
+    await f.client.request('applyCorrection', { token: preview.token });
+  }
+  assert.equal((await f.inspected(a.id)).contribution, null);
+  const calls = f.calls.length;
+  await f.service.forget(a.id, f.character.id);
+  assert.equal(f.catalog.recall(b.reply, b.id), undefined);
+  assert.equal(f.catalog.db.prepare('SELECT COUNT(*) AS count FROM recalls WHERE replyId=?').get(b.reply).count, 0);
+  assert.deepEqual(f.catalog.recall(root.reply, root.id), root.recall);
+  assert.equal(f.calls.length, calls);
+  const archive = join(f.root, 'deleted-story.zip');
+  await exportStory(f.catalog, f.character.id, archive, f.root);
+  const files = unzipSync(await readFile(archive));
+  assert.ok(Object.values(files).every(bytes => !Buffer.from(bytes).toString('utf8').includes('I remember A.')));
+});
+
+for (const field of ['historicalContext', 'impressions', 'historySources']) test(`deletion follows ${field} references after withdrawal`, async t => {
+  const f = await fixture(t), a = await f.episode('A', '2000-01-01');
+  const b = await f.episode('B', '2010-01-01', { memorize: false });
+  const activated = await f.client.request('retrieve', { episodeId: b.id, at: '2010-01-01',
+    recallHistory: recallHistory(f.catalog, b.manager.getBranch(), b.id, f.character.id) });
+  const record = { ...b.recall, memories: [], historicalContext: [], impressions: [], historySources: [] };
+  if (field === 'historicalContext') record.historicalContext = activated.historicalContext;
+  else if (field === 'impressions') record.impressions = [{ text: 'I remember A.', sourceEpisodeIds: [a.id] }];
+  else record.historySources = [a.id];
+  f.catalog.saveRecall(b.id, b.reply, record);
+  await f.client.request('unmemorize', { episodeId: a.id });
+  await f.service.forget(a.id, f.character.id);
+  assert.equal(f.catalog.recall(b.reply, b.id), undefined);
+});
+
+test('reference cleanup preserves unrelated replies in the same re-dated episode and isolates other characters', async t => {
+  const f = await fixture(t);
+  const root = await f.episode('Root', '1980-01-01'), a = await f.episode('A', '2000-01-01');
+  const b = await f.episode('B', '2010-01-01', { memorize: false });
+  const other = f.catalog.create('Anya', 'You are Anya.'), foreign = await f.episode('foreign', '2010-01-01', { owner: other, memorize: false });
+  // Even a foreign record naming A is outside this character's cleanup scope.
+  const foreignRecord = { ...foreign.recall, memories: [{ episodeId: a.id, gist: 'I remember A.' }] };
+  f.catalog.saveRecall(foreign.id, foreign.reply, foreignRecord);
+  await f.client.request('unmemorize', { episodeId: a.id });
+  await f.client.request('when', { episodeId: b.id, position: '1990-01-01', resetStart: true });
+  b.manager.appendMessage({ role: 'user', content: 'We stay together.', timestamp: 2 });
+  const recall = await f.client.request('retrieve', { episodeId: b.id, at: '1990-01-01', cue: 'lantern' });
+  assert.deepEqual(recall.memories.map(memory => memory.episodeId), [root.id]);
+  const reply = b.manager.appendMessage({ role: 'assistant', content: [{ type: 'text', text: 'I stay.' }], stopReason: 'stop' });
+  f.catalog.remember({ episodeId: b.id, characterId: f.character.id, cwd: f.root, path: b.path, leaf: b.manager.getLeafId() });
+  const unrelated = { ...recall, playedPrefixHash: sourceHash(extractSource(b.manager.getBranch())) };
+  f.catalog.saveRecall(b.id, reply, unrelated);
+  await f.service.forget(a.id, f.character.id);
+  assert.equal(f.catalog.recall(b.reply, b.id), undefined);
+  assert.deepEqual(f.catalog.recall(reply, b.id), unrelated);
+  assert.deepEqual(f.catalog.recall(foreign.reply, foreign.id), foreignRecord);
+  assert.deepEqual(recallHistory(f.catalog, b.manager.getBranch(), b.id, f.character.id).map(item => item.replyId), [reply]);
+});
+
+test('reply cleanup survives interruption and catches a referencing context saved after planning', async t => {
+  const f = await fixture(t), a = await f.episode('A', '2000-01-01');
+  const b = await f.episode('B', '2010-01-01', { memorize: false });
+  await f.client.request('unmemorize', { episodeId: a.id });
+  const acknowledge = f.catalog.acknowledgeDeletion.bind(f.catalog);
+  f.catalog.acknowledgeDeletion = () => { throw new Error('Interrupted reference cleanup'); };
+  await assert.rejects(f.service.forget(a.id, f.character.id), /Interrupted reference cleanup/);
+  const plan = JSON.parse(f.catalog.db.prepare('SELECT affected FROM recall_deletions WHERE episodeId=?').get(a.id).affected);
+  assert.ok(plan.replyIds.includes(b.reply));
+  // Simulate a legacy writer that did not yet guard contexts saved during deletion.
+  f.catalog.db.prepare('INSERT INTO recalls VALUES(?,?,?)').run(b.id, 'late-context', JSON.stringify(b.recall));
+  f.catalog.acknowledgeDeletion = acknowledge;
+  await f.close();
+  const catalog = new Catalog(f.home), service = new MemoryService(catalog, nativeEnginePath(), f.infer);
+  t.after(async () => { await service.close(); catalog.close(); });
+  await service.reconcile();
+  assert.equal(catalog.recall(b.reply, b.id), undefined);
+  assert.equal(catalog.recall('late-context', b.id), undefined);
+  assert.equal(catalog.source(a.id).deleted, 2);
+});
+
+test('a late reply cannot restore deleted recall prose while unrelated context can still be saved', async t => {
+  const f = await fixture(t);
+  await f.episode('Root', '1980-01-01');
+  const a = await f.episode('A', '2000-01-01'), b = await f.episode('B', '2010-01-01', { memorize: false });
+  await f.client.request('unmemorize', { episodeId: a.id });
+  f.catalog.tombstone(a.id);
+  f.catalog.saveRecall(b.id, 'during-deletion', b.recall);
+  assert.equal(f.catalog.recall('during-deletion', b.id), undefined);
+  await f.service.reconcile();
+  f.catalog.saveRecall(b.id, 'after-deletion', b.recall);
+  f.catalog.saveRecall(a.id, 'deleted-owner', a.recall);
+  f.catalog.saveRecall('unregistered-source', 'late-unregistered', b.recall);
+  assert.equal(f.catalog.recall('after-deletion', b.id), undefined);
+  assert.equal(f.catalog.recall('deleted-owner', a.id), undefined);
+  assert.equal(f.catalog.recall('late-unregistered'), undefined);
+  const fresh = await f.client.request('retrieve', { episodeId: b.id, at: '2010-01-01' });
+  f.catalog.saveRecall(b.id, 'unrelated-context', fresh);
+  assert.deepEqual(f.catalog.recall('unrelated-context', b.id), fresh);
 });
 
 test('a chronology race cannot delete using an obsolete cleanup plan', async t => {

@@ -5,11 +5,32 @@ import { resolve, join, dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import { recoverStoryRestores } from './story-backup.js';
+import { record } from './errors.js';
 
 export interface Character { id: string; name: string; persona: string }
 export interface Binding { characterId: string; enabled: boolean }
 export interface FolderModel { provider: string; modelId: string; thinkingLevel?: ThinkingLevel }
 export interface SourceRecord { episodeId: string; characterId: string; path: string; cwd: string; leaf: string | null; deleted: number }
+interface RecallDeletionScope { episodeIds: string[]; replyIds: string[] }
+function deletionScope(text: string): RecallDeletionScope {
+  const saved: unknown = JSON.parse(text);
+  // Plans written before reply-level cleanup contained only episode IDs.
+  const scope = Array.isArray(saved) ? { episodeIds: saved, replyIds: [] } : saved;
+  if (!record(scope) || !Array.isArray(scope.episodeIds) || !scope.episodeIds.every(id => typeof id === 'string')
+    || !Array.isArray(scope.replyIds) || !scope.replyIds.every(id => typeof id === 'string')) throw new Error('Invalid pending recall cleanup plan.');
+  return { episodeIds: scope.episodeIds, replyIds: scope.replyIds };
+}
+function recallEpisodeIds(value: unknown): Set<string> {
+  const ids = new Set<string>();
+  if (!record(value)) return ids;
+  for (const items of [value.memories, value.historicalContext]) if (Array.isArray(items)) {
+    for (const item of items) if (record(item) && typeof item.episodeId === 'string') ids.add(item.episodeId);
+  }
+  const lists: unknown[] = [value.historySources];
+  if (Array.isArray(value.impressions)) for (const item of value.impressions) if (record(item)) lists.push(item.sourceEpisodeIds);
+  for (const list of lists) if (Array.isArray(list)) for (const id of list) if (typeof id === 'string') ids.add(id);
+  return ids;
+}
 function directoryKey(cwd: string): string {
   const canonical = realpathSync(cwd);
   return process.platform === 'win32' ? canonical.toLocaleLowerCase('en-US') : canonical;
@@ -75,6 +96,11 @@ export class Catalog {
   source(id: string): SourceRecord | undefined { return this.db.prepare('SELECT * FROM sources WHERE episodeId=?').get(id) as unknown as SourceRecord | undefined; }
   sources(): SourceRecord[] { return this.db.prepare('SELECT * FROM sources').all() as unknown as SourceRecord[]; }
   tombstone(id: string): void { this.db.prepare('UPDATE sources SET deleted=1 WHERE episodeId=? AND deleted=0').run(id); }
+  private referencingRecalls(id: string): string[] {
+    return this.db.prepare(`SELECT r.replyId,r.data FROM recalls r JOIN sources s ON s.episodeId=r.episodeId
+      WHERE s.characterId=(SELECT characterId FROM sources WHERE episodeId=?)`).all(id)
+      .filter(row => recallEpisodeIds(JSON.parse(String(row.data))).has(id)).map(row => String(row.replyId));
+  }
   /** Save the cleanup scope before native deletion removes its chronology. Retries
    * retain this plan even after the native episode and contributions are gone. */
   prepareRecallDeletion(id: string): number | undefined {
@@ -108,9 +134,13 @@ export class Catalog {
     try {
       if (this.source(id)?.deleted === 2) { this.db.exec('COMMIT'); return undefined; }
       const previous = this.db.prepare('SELECT affected FROM recall_deletions WHERE episodeId=?').get(id);
-      for (const episodeId of previous ? JSON.parse(String(previous.affected)) as string[] : []) affected.add(episodeId);
+      const scope = previous ? deletionScope(String(previous.affected)) : { episodeIds: [], replyIds: [] };
+      for (const episodeId of scope.episodeIds) affected.add(episodeId);
+      // Withdrawn/invalidated contributions have no native row, but their supplied
+      // prose can still exist in saved contexts, including re-dated episodes.
+      const replyIds = new Set([...scope.replyIds, ...this.referencingRecalls(id)]);
       this.db.prepare('INSERT INTO recall_deletions VALUES(?,?) ON CONFLICT(episodeId) DO UPDATE SET affected=excluded.affected')
-        .run(id, JSON.stringify([...affected]));
+        .run(id, JSON.stringify({ episodeIds: [...affected], replyIds: [...replyIds] }));
       this.db.exec('COMMIT'); return revision;
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
@@ -122,15 +152,34 @@ export class Catalog {
         if (this.source(id)?.deleted === 2) { this.db.exec('COMMIT'); return; }
         throw new Error('Prepare recall cleanup before acknowledging source deletion.');
       }
+      const scope = deletionScope(String(plan.affected));
       const remove = this.db.prepare('DELETE FROM recalls WHERE episodeId=?');
-      for (const episodeId of JSON.parse(String(plan.affected)) as string[]) remove.run(episodeId);
+      for (const episodeId of scope.episodeIds) remove.run(episodeId);
+      const removeReply = this.db.prepare(`DELETE FROM recalls WHERE replyId=? AND episodeId IN
+        (SELECT episodeId FROM sources WHERE characterId=(SELECT characterId FROM sources WHERE episodeId=?))`);
+      // Include contexts saved after planning but before acknowledgment.
+      for (const replyId of new Set([...scope.replyIds, ...this.referencingRecalls(id)])) removeReply.run(replyId, id);
       this.db.prepare('UPDATE sources SET deleted=2 WHERE episodeId=? AND deleted=1').run(id);
       this.db.prepare('DELETE FROM recall_deletions WHERE episodeId=?').run(id);
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   saveRecall(episodeId: string, replyId: string, data: unknown): void {
-    this.db.prepare('INSERT INTO recalls VALUES(?,?,?) ON CONFLICT(replyId) DO UPDATE SET data=excluded.data').run(episodeId, replyId, JSON.stringify(data));
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const source = this.source(episodeId);
+      const owner = source?.characterId ?? (record(data) && typeof data.characterId === 'string' ? data.characterId : undefined);
+      let obsolete = Boolean(source?.deleted);
+      if (owner && !obsolete) {
+        const deleted = this.db.prepare('SELECT 1 FROM sources WHERE episodeId=? AND characterId=? AND deleted<>0');
+        for (const reference of recallEpisodeIds(data)) if (deleted.get(reference, owner)) { obsolete = true; break; }
+      }
+      // A reply started before deletion may finish after cleanup. Never save its
+      // removed background again, or write new records for a deleted source.
+      if (!obsolete) this.db.prepare('INSERT INTO recalls VALUES(?,?,?) ON CONFLICT(replyId) DO UPDATE SET data=excluded.data')
+        .run(episodeId, replyId, JSON.stringify(data));
+      this.db.exec('COMMIT');
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   recall(replyId: string, episodeId?: string): unknown {
     const row = episodeId === undefined ? this.db.prepare('SELECT data FROM recalls WHERE replyId=?').get(replyId)
