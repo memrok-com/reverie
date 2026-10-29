@@ -1,6 +1,6 @@
 # Reverie controls in Pi
 
-Run `/reverie` or Ctrl+Alt+M to open the character and memory menu.
+Run `/reverie` or Ctrl+Alt+M to open the menu, grouped into **Character**, **Episodes & dates**, **Memory**, **Story backup**, and **Keyboard shortcuts**. Explicit commands remain available.
 
 | Command | Behavior |
 | --- | --- |
@@ -12,6 +12,7 @@ Run `/reverie` or Ctrl+Alt+M to open the character and memory menu.
 | `/reverie on` / `off` | Enable or disable memory retrieval and formation. Personality remains active. |
 | `/reverie when [date] [label]` | Set fictional time, or open date input. A visible confirmation and widget show the result. |
 | `/reverie chats` | Browse complete episode date intervals in chronological order, inspect their memories, resume/delete chats, or start an episode in a gap. |
+| `/reverie redate [episode-id] [new-start]` | Choose an existing episode and preview moving its complete interval, with dependent memory invalidation. The new start can be an explicit date or relative input. |
 | `/reverie memorize` | Form or replace the episode's contribution from its selected full branch, then review the actual published recollections and broader impressions. |
 | `/reverie memory` | Complete stored recollections and episode states, plus a clearly labeled retrieval sample at the current story point. |
 | `/reverie memory browse` | Select an episode to read every published recollection, inspect broader impressions separately, follow played sources, correct an item, or resume its chat. Also available through **Inspect memory** in the menu. |
@@ -33,13 +34,21 @@ Run `/reverie` or Ctrl+Alt+M to open the character and memory menu.
 
 Default shortcuts: Ctrl+Alt+R rerolls; Ctrl+Alt+Left/Right cycles; Ctrl+Alt+M opens the menu. They preserve an unsent text draft. Reroll requires an idle session and a user message; cycling also requires a saved character reply. If generation failed because of authentication or connection settings, correct those or select another model before retrying.
 
-Before the first player message, you can correct the story date as often as needed, moving it earlier or later with `/reverie when` or **Story date** in the menu. Each correction replaces the episode's starting date. Once play begins, date changes must move forward; an earlier episode needs a new chat. Dates must still fit a separate chronological slot from other episodes.
+Before the first player message, you can correct the story date as often as needed, moving it earlier or later with `/reverie when` or **Episodes & dates → Story date**. Each correction replaces the episode's starting date. Once play begins, this control advances the selected branch's time. Use the dedicated **Re-date episode** workflow to move an existing played episode earlier or later. Dates must still fit a separate chronological slot from other episodes.
 
 Dated chats with no played turns are saved when you leave or close them, so Pi's `/resume` can find them. **Episode chats** in the Reverie menu also lets you resume or delete any dated episode. It can recover an older date-only setup that has no saved chat file, retaining its identity and date without adding dialogue. **Delete this chat** also works before the first turn. Memory inspection calls unmemorized episodes **Not memorized**; this describes their memory contribution, not whether they can be resumed.
 
-**Start episode in a gap** lists the space before, between and after existing episode intervals. Choose a gap, enter an explicit date and label, then review the resolved date before creating a chat. Dates must be strictly inside the chosen gap; an episode with time jumps occupies its full start-to-end interval. Invalid dates and cancelled previews leave the current chat and chronology intact. Memory browsing stays outside character context. Relative placement and re-dating existing episodes remain deferred for a separate workflow.
+**Start episode in a gap** lists the space before, between and after existing episode intervals. Choose a gap, enter an explicit date and label or a relative date, then review the resolved date before creating a chat. Dates must be strictly inside the chosen gap; an episode with time jumps occupies its full selected start-to-end interval. Invalid dates and cancelled previews leave the current chat and chronology intact. Memory browsing stays outside character context.
 
-The preview lists later reviewed corrections that must be released before memorizing earlier play, and warns that later included memory will be re-formed. Creating a dated setup alone does not re-form memory. Placement is checked again during session creation; if another window has occupied the gap or setup fails, the new chat explains the failure and the previous saved chat remains available through **Episode chats**.
+Relative dates accept positive whole minutes, hours, days or weeks, for example `three days after The lighthouse`, `2 weeks before The reunion`, or `1 hour after <episode-id>`. Counts one through ten can be spelled out. **After** uses the anchor's end; **before** uses its start. Labels match in full, ignoring case, or use an exact episode ID. Duplicate labels open a chooser with dates and IDs; cancellation leaves the date unchanged. The preview shows the selected anchor boundary and resolved UTC timestamp. Days mean 24 hours and weeks mean seven days. Placement resolves once: moving an anchor later does not move scenes placed relative to it. In a gap, a separate input supplies the new scene's label. `/reverie when three days after The lighthouse` also previews the resolved date before using it.
+
+Choose **Re-date episode** from **Episodes & dates**, an episode's chat actions, or its memory inspector. Enter a new starting date, then review the old and proposed start/end dates, the included episodes preceding the scene before and after, invalidated recollections and impressions, and any reviewed corrections that will be released. A separate confirmation applies exactly that preview. Changing the story in another window makes the preview expire. Overlaps are rejected with both episode labels and intervals.
+
+Re-dating translates the entire selected interval by the difference between its old and new start. Every branch time entry shifts by that same amount, preserving the gaps between time jumps, source/episode identities and selected branch. Selecting an alternative branch can restore a different end, subject to the existing overlap check. The stored shift survives restart and story backup; transcripts are not rewritten. Dates mentioned in dialogue may need player attention for continuity.
+
+Applying a date shift immediately invalidates affected contributions from the earlier of the old, published and new positions, including later recollections and impression snapshots. Earlier unaffected contributions survive. The preview explicitly lists reviewed corrections released with those dependencies. Inclusion/withdrawal choices remain intact. Rebuild afterward to form memory in the new canonical order; re-dating itself makes no model calls. Saved reply explanations remain historical, and their invalidated references cannot supply memory to a new reply.
+
+For gap creation, the preview lists later reviewed corrections that must be released before memorizing earlier play, and warns that later included memory will be re-formed. Creating a dated setup alone does not re-form memory. Placement is checked again during session creation; if another window has occupied the gap or setup fails, the new chat explains the failure and the previous saved chat remains available through **Episode chats**.
 
 Commands, UI notices and injected recollections are excluded from played source. Only explicit memorization forms lasting memory. Deletion invalidation is immediate and requires no model; rebuilding later dependent memory does require one.
 

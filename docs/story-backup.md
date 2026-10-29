@@ -6,11 +6,11 @@ Restore with `/reverie restore [file.zip]` from an unlinked folder or **Restore 
 
 ## Contents and portability
 
-Format version 1 is a ZIP with a JSON story manifest, its SHA-256 integrity record, and Pi session files with individual SHA-256 fingerprints. It includes:
+Format version 2 is a ZIP with a JSON story manifest, its SHA-256 integrity record, and Pi session files with individual SHA-256 fingerprints. It adds chronology offsets; older releases reject it instead of silently restoring incorrect branch dates. This release also imports version-1 archives. It includes:
 
 - Character name, identity and personality.
 - Original played entries and alternatives, their entry identities and selected leaves.
-- Episode labels, complete fictional intervals, inclusion/withdrawal state and invalidated/stale states.
+- Episode labels, complete fictional intervals, cumulative branch date shifts, inclusion/withdrawal state and invalidated/stale states. Older archives without a date shift restore with zero offset.
 - Published recollections, broader-impression snapshots, reviewed corrections, dependencies and source references.
 - Historical reply-context explanations, and the exporting folder's memory switch and provider/model/thinking preference.
 

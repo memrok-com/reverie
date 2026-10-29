@@ -17,6 +17,7 @@ import { episodeText, impressionsText, memoryText, sourcesText, stateLabel } fro
 import { errorCode, errorMessage } from './errors.js';
 import { exportStory, restoreStory } from './story-backup.js';
 import { recallHistory } from './recall-history.js';
+import { anchorCandidates, branchTime, relativePlacement, resolveRelative } from './chronology.js';
 
 const GUIDANCE = 'Stay in character. Play only your own actions and dialogue. Recollections are subjective: distinguish uncertain impressions from witnessed events, and do not invent shared events in memory gaps.';
 const DEFAULT_KEYS = { reroll: 'ctrl+alt+r', previous: 'ctrl+alt+left', next: 'ctrl+alt+right', menu: 'ctrl+alt+m' } as const;
@@ -171,8 +172,7 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
     if (character) {
       const result = await state.service.client(character.id).request('status');
       episode = result.episodes.find(item => item.id === ctx.sessionManager.getSessionId());
-      const time = ctx.sessionManager.getBranch().findLast(entry => entry.type === 'custom' && entry.customType === 'reverie.time');
-      const selectedTime = time?.type === 'custom' ? (time.data as { now?: number })?.now : undefined;
+      const selectedTime = episode && branchTime(ctx.sessionManager.getBranch(), episode);
       if (episode && typeof selectedTime === 'number' && selectedTime !== episode.now) {
         episode = await state.service.client(character.id).request('when', { episodeId: episode.id,
           position: new Date(selectedTime).toISOString(), branchSelection: true });
@@ -241,20 +241,42 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
   }
   async function setDate(ctx: ExtensionContext, input?: string): Promise<boolean> {
     const character = selected(ctx)!; assertOwner(ctx, character);
-    const raw = input ?? (ctx.hasUI ? await ctx.ui.input('Story date (YYYY-MM-DD or zoned timestamp)', episode ? new Date(episode.now).toISOString() : 'For example: 2010-01-01 The lighthouse') : undefined);
+    const raw = input ?? (ctx.hasUI ? await ctx.ui.input('Story date (YYYY-MM-DD, zoned timestamp, or three days after The lighthouse)', episode ? new Date(episode.now).toISOString() : 'For example: 2010-01-01 The lighthouse') : undefined);
     if (!raw?.trim()) return false;
-    const [position, ...label] = raw.trim().split(/\s+/);
+    const placement = await resolvePlacement(ctx, character, raw); if (!placement) return false;
+    const { position, label } = placement;
+    if (placement.explanation && !await ctx.ui.confirm('Use resolved story date?', placement.explanation)) return false;
     // Inspect the whole session so navigating behind a played turn cannot reset its start.
     const resetStart = !ctx.sessionManager.getEntries().some(entry => entry.type === 'message'
       && (entry.message.role === 'user' || entry.message.role === 'assistant'));
     const previousTitle = episode && episodeTitle(episode, character.name);
     episode = await service!.client(character.id).request('when', { episodeId: ctx.sessionManager.getSessionId(), position,
       resetStart,
-      ...(label.length ? { label: label.join(' ') } : {}) });
+      ...(label ? { label } : {}) });
     if (!ownerOf(ctx.sessionManager.getEntries())) pi.appendEntry('reverie.binding', { characterId: character.id });
-    pi.appendEntry('reverie.time', { now: episode.now });
+    pi.appendEntry('reverie.time', { now: episode.now, offset: episode.time_offset ?? 0 });
     if (resetStart && ctx.sessionManager.getSessionName() === previousTitle) pi.setSessionName(episodeTitle(episode, character.name));
     ctx.ui.notify(`Story date set: ${new Date(episode.now).toISOString()} · ${episode.label}`, 'info'); status(ctx); return true;
+  }
+  async function resolvePlacement(ctx: ExtensionContext, character: Character, raw: string): Promise<{ position: string | number; label?: string; explanation?: string } | undefined> {
+    const relative = relativePlacement(raw);
+    if (!relative) {
+      const [position, ...label] = raw.trim().split(/\s+/);
+      return { position: position!, ...(label.length ? { label: label.join(' ') } : {}) };
+    }
+    const { episodes } = await service!.client(character.id).request('status');
+    const candidates = anchorCandidates(episodes, relative.anchor);
+    if (!candidates.length) throw new Error(`No episode matches “${relative.anchor}”. Use its full label or episode ID.`);
+    let anchor = candidates[0]!;
+    if (candidates.length > 1) {
+      if (!ctx.hasUI) throw new Error('That episode label is ambiguous. Use an exact episode ID.');
+      const labels = candidates.map((item, index) => `${index + 1}. ${item.label} · ${new Date(item.start).toISOString()} → ${new Date(item.now).toISOString()} · ${item.id}`);
+      const choice = await ctx.ui.select('Choose the relative date anchor', labels);
+      if (!choice) return;
+      anchor = candidates[labels.indexOf(choice)]!;
+    }
+    const position = resolveRelative(relative, anchor);
+    return { position, explanation: `“${raw}” resolves to ${new Date(position).toISOString()}.\nAnchor: ${anchor.label} [${anchor.id}] · ${relative.direction === 'after' ? 'end' : 'start'} ${new Date(relative.direction === 'after' ? anchor.now : anchor.start).toISOString()}.\nThis is a one-time resolved date. Moving the anchor later does not move this episode.` };
   }
   async function navigate(ctx: ExtensionCommandContext, action: 'reroll' | 'previous' | 'next'): Promise<void> {
     selected(ctx); if (!ctx.isIdle() || working) throw new Error('Wait for the current response or memory operation before changing replies.');
@@ -392,9 +414,10 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
     if (choice === 'Start episode in a gap') { await startInGap(ctx, character, episodes); return; }
     const target = episodes[labels.indexOf(choice)];
     if (!target) return;
-    const action = await ctx.ui.select(episodeTitle(target, character.name), ['Resume', 'Inspect memory', 'Delete']);
+    const action = await ctx.ui.select(episodeTitle(target, character.name), ['Resume', 'Inspect memory', 'Re-date episode', 'Delete']);
     if (action === 'Inspect memory') { await browseMemory(ctx, character, 'browse', target.id); return; }
     if (action === 'Delete') { await deleteChat(ctx, character, target.id); return; }
+    if (action === 'Re-date episode') { await redateEpisode(ctx, character, target.id); return; }
     if (action !== 'Resume') return;
     if (target.id === ctx.sessionManager.getSessionId()) { ctx.ui.notify('This episode is already open.', 'info'); return; }
     const source = catalog!.source(target.id);
@@ -405,7 +428,7 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
     await ctx.newSession({ setup: async manager => {
       manager.newSession({ id: target.id });
       manager.appendCustomEntry('reverie.binding', { characterId: character.id });
-      manager.appendCustomEntry('reverie.time', { now: target.now });
+      manager.appendCustomEntry('reverie.time', { now: target.now, offset: target.time_offset ?? 0 });
       manager.appendSessionInfo(episodeTitle(target, character.name));
     } });
   }
@@ -425,10 +448,12 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
     gaps.push({ label: `After ${name(last)} · after ${new Date(last.now).toISOString()}`, after: last.now });
     const choice = await ctx.ui.select('Choose space for a new episode', gaps.map(gap => gap.label));
     const gap = gaps.find(gap => gap.label === choice); if (!gap) return;
-    const raw = await ctx.ui.input('New episode date and label (YYYY-MM-DD or YYYY-MM-DDTHH:mmZ)');
+    const raw = await ctx.ui.input('New episode date and label, or relative date (three days after The lighthouse)');
     if (!raw?.trim()) return;
-    const [position, ...label] = raw.trim().split(/\s+/);
-    const placed = await service!.client(character.id).request('when', { episodeId: randomUUID(), position, label: label.join(' ') || 'New episode', preview: true });
+    const placement = await resolvePlacement(ctx, character, raw); if (!placement) return;
+    const label = placement.label ?? (placement.explanation ? await ctx.ui.input('New episode label', 'New episode') : 'New episode');
+    if (label === undefined) return;
+    const placed = await service!.client(character.id).request('when', { episodeId: randomUUID(), position: placement.position, label: label.trim() || 'New episode', preview: true });
     if ((gap.after !== undefined && placed.start <= gap.after) || (gap.before !== undefined && placed.start >= gap.before)) {
       throw new Error('Choose a date strictly inside the selected gap. Existing episodes and time jumps occupy their full intervals.');
     }
@@ -436,7 +461,7 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
     const later = inspection.episodes.filter(item => item.episode.included && item.episode.start > placed.start);
     const corrections = later.filter(item => item.correction).map(item => item.episode.label);
     const consequences = later.length ? `\nMemorizing this scene re-forms memory for ${later.length} later included episode(s).${corrections.length ? ` Release the later reviewed corrections before memorizing: ${corrections.join(', ')}.` : ''}` : '';
-    if (!await ctx.ui.confirm('Start a new episode here?', `${placed.label} · ${new Date(placed.start).toISOString()}\n${gap.label}\nThis creates a new chat at this explicit date. Existing episodes keep their dates.${consequences}`)) return;
+    if (!await ctx.ui.confirm('Start a new episode here?', `${placed.label} · ${new Date(placed.start).toISOString()}\n${gap.label}\n${placement.explanation ?? ''}\nThis creates a new chat at this explicit date. Existing episodes keep their dates.${consequences}`)) return;
     let setupError: unknown;
     await ctx.newSession({ setup: async manager => {
       // Session replacement retires this extension instance. Initialize Pi's new
@@ -448,13 +473,48 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
         try {
           const dated = await setupService.client(character.id).request('when', { episodeId: manager.getSessionId(), position: placed.start, label: placed.label });
           manager.appendCustomEntry('reverie.binding', { characterId: character.id });
-          manager.appendCustomEntry('reverie.time', { now: dated.now });
+          manager.appendCustomEntry('reverie.time', { now: dated.now, offset: dated.time_offset ?? 0 });
           manager.appendSessionInfo(episodeTitle(dated, character.name));
         } finally { await setupService.close(); setupCatalog.close(); }
       } catch (error) { setupError = error; }
     }, withSession: async fresh => {
       if (setupError) fresh.ui.notify(`Episode setup did not complete: ${errorMessage(setupError)} The previous chat remains saved. Use /reverie chats to resume it or choose another date.`, 'error');
     } });
+  }
+  async function redateEpisode(ctx: ExtensionCommandContext, character: Character, id?: string, input?: string): Promise<void> {
+    if (!ctx.isIdle() || working) throw new Error('Finish or cancel the current operation before re-dating.');
+    const inspection = await inspectMemory(ctx, character);
+    const target = id ? inspection.episodes.find(item => item.episode.id === id)
+      : await chooseEpisode(ctx, inspection, 'Choose episode to re-date');
+    if (!target) { if (id) throw new Error('No dated episode with that ID exists for this character.'); return; }
+    const raw = input ?? await ctx.ui.input('New episode start (explicit date or three days after The lighthouse)', new Date(target.episode.start).toISOString());
+    if (!raw?.trim()) return;
+    const placement = await resolvePlacement(ctx, character, raw); if (!placement) return;
+    if (placement.label) throw new Error('Re-dating accepts a new start date or relative date. The episode keeps its label.');
+    const client = service!.client(character.id);
+    const preview = await client.request('previewRedate', { episodeId: target.episode.id, position: placement.position, revision: inspection.revision });
+    const label = (id: string) => inspection.episodes.find(item => item.episode.id === id)?.episode.label ?? id;
+    const range = (item: Episode) => `${new Date(item.start).toISOString()} → ${new Date(item.now).toISOString()}`;
+    const lines = [preview.before.label, `Before: ${range(preview.before)}`, `After: ${range(preview.after)}`,
+      placement.explanation ?? 'This is a one-time explicit date change.',
+      `Move the entire selected interval by ${preview.delta / 86_400_000} days. All branch time jumps shift by the same amount; their spacing and selected branch are preserved.`,
+      'Earlier recollections become eligible at or after their episode ends. Moving an episode can change which earlier memories it and later scenes may use.',
+      `Included episodes preceding this scene before: ${preview.earlierBefore.map(label).join(', ') || '(none)'}.`,
+      `Included episodes preceding this scene after: ${preview.earlierAfter.map(label).join(', ') || '(none)'}. Invalidated contributions are withheld until rebuilt.`,
+      'Invalidate these published contributions, including their recollections and impression snapshots (inclusion choices retained):',
+      ...preview.affected.map(item => `${label(item.episodeId)} [${item.episodeId}] · ${item.memories.length} recollections · ${item.impressions.length} impressions`),
+      !preview.affected.length ? '(none)' : '',
+      `Release reviewed corrections tied to the old chronology: ${preview.releasedPins.map(label).join(', ') || '(none)'}.`,
+      'Rebuild memory afterward to form contributions against the new chronology. This action makes no model calls.',
+      'Dates mentioned in played dialogue are not rewritten. Source continuity may need your attention. Saved reply explanations describe their original context; invalidated references cannot supply character memory.'];
+    await show(ctx, 'Preview episode re-date', lines.filter(Boolean).join('\n\n'));
+    if (!await ctx.ui.confirm('Apply episode re-date?', `${preview.before.label}\n${range(preview.before)} → ${range(preview.after)}\nInvalidate ${preview.affected.length} contributions and release ${preview.releasedPins.length} reviewed corrections as previewed? Dialogue dates may need attention.`)) return;
+    if (!ctx.isIdle() || working || context?.sessionManager.getSessionId() !== ctx.sessionManager.getSessionId()
+      || selected(ctx, false)?.id !== character.id) throw new Error('The active chat changed. Open the re-date preview again.');
+    await client.request('applyRedate', { token: preview.token });
+    lastRecall = undefined;
+    await refresh(ctx);
+    ctx.ui.notify('Episode re-dated. Rebuild memory to refresh invalidated contributions. Check dates mentioned in dialogue for continuity.', 'info');
   }
   async function inspectMemory(ctx: ExtensionCommandContext, character: Character): Promise<MemoryInspection> {
     remember(ctx); await service!.reconcile();
@@ -517,7 +577,7 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
     if (id && !item) throw new Error('No dated episode with that ID exists for this character. Set a story date or choose an episode from /reverie chats.');
     if (!item) return;
     const action = mode === 'correct' ? 'Correct a recollection' : mode === 'impressions' ? 'Broader impressions' : mode === 'sources' ? 'Supporting played source'
-      : await ctx.ui.select(episodeTitle(item.episode, character.name), ['Read recollections', 'Broader impressions', 'Supporting played source', 'Correct a recollection', ...(item.correction ? ['Release correction'] : []), 'Resume episode']);
+      : await ctx.ui.select(episodeTitle(item.episode, character.name), ['Read recollections', 'Broader impressions', 'Supporting played source', 'Correct a recollection', ...(item.correction ? ['Release correction'] : []), 'Resume episode', 'Re-date episode']);
     if (action === 'Read recollections') await show(ctx, 'Stored episode memory', episodeText(item));
     if (action === 'Broader impressions') await show(ctx, 'Broader impressions', impressionsText(item, inspection));
     if (action === 'Supporting played source') {
@@ -526,6 +586,7 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
       if (sourceEpisode) await show(ctx, 'Supporting played source', sourcesText(sourceEpisode, character.name));
     }
     if (action === 'Correct a recollection' || action === 'Release correction') await correctMemory(ctx, character, inspection, item, action === 'Release correction');
+    if (action === 'Re-date episode') await redateEpisode(ctx, character, item.episode.id);
     if (action === 'Resume episode') {
       if (working || !ctx.isIdle()) throw new Error('Wait for the current operation before resuming an episode.');
       const source = catalog!.source(item.episode.id);
@@ -570,8 +631,11 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
     }
     if (action === 'menu') {
       const character = selected(ctx, false);
-      const choices = character ? ['Personality', 'Model for this folder', 'Story date', 'Episode chats', 'Memorize episode', 'Inspect memory', 'Explain last recall', 'Enable memory', 'Disable memory', 'Link character', 'Unlink character', 'Delete this chat', 'Rebuild memory', 'Regenerate with current model', 'Cancel memory operation', 'Story backup', 'Keyboard shortcuts'] : ['Create/link character', 'Restore character backup', 'Keyboard shortcuts'];
-      const choice = await ctx.ui.select('Reverie', choices);
+      const choices = character ? ['Character', 'Episodes & dates', 'Memory', 'Story backup', 'Keyboard shortcuts'] : ['Create/link character', 'Restore character backup', 'Keyboard shortcuts'];
+      let choice = await ctx.ui.select('Reverie', choices);
+      if (choice === 'Character') choice = await ctx.ui.select('Character', ['Personality', 'Model for this folder', 'Link character', 'Unlink character']);
+      if (choice === 'Episodes & dates') choice = await ctx.ui.select('Episodes & dates', ['Episode chats', 'Story date', 'Re-date episode', 'Delete this chat']);
+      if (choice === 'Memory') choice = await ctx.ui.select('Memory', ['Memorize episode', 'Inspect memory', 'Explain last recall', 'Enable memory', 'Disable memory', 'Rebuild memory', 'Regenerate with current model', 'Cancel memory operation']);
       if (choice === 'Story backup') {
         const backupAction = await ctx.ui.select('Story backup', ['Export character story', 'Restore character backup']);
         if (backupAction) await command(backupAction === 'Export character story' ? 'backup' : 'restore', ctx); return;
@@ -580,6 +644,7 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
       const actions: Record<string, string> = { 'Personality': 'persona', 'Story date': 'when', 'Memorize episode': 'memorize', 'Inspect memory': 'memory', 'Explain last recall': 'explain', 'Enable memory': 'on', 'Disable memory': 'off', 'Link character': 'link', 'Unlink character': 'unlink', 'Delete this chat': 'delete', 'Rebuild memory': 'rebuild', 'Cancel memory operation': 'cancel', 'Create/link character': 'setup', 'Keyboard shortcuts': 'keys' };
       actions['Model for this folder'] = 'model';
       actions['Episode chats'] = 'chats';
+      actions['Re-date episode'] = 'redate';
       actions['Regenerate with current model'] = 'regenerate';
       if (choice) await command(choice === 'Inspect memory' ? 'memory browse' : actions[choice]!, ctx); return;
     }
@@ -602,6 +667,7 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
     }
     if (working && !['cancel', 'memory', 'explain'].includes(action)) throw new Error('Finish or cancel memory formation before changing character settings.');
     if (action === 'chats') { await chats(ctx, character); return; }
+    if (action === 'redate') { await redateEpisode(ctx, character, rest[0], rest.length > 1 ? rest.slice(1).join(' ') : undefined); return; }
     if (action === 'model') {
       await ctx.modelRegistry.refresh({ allowNetwork: false });
       const models = ctx.modelRegistry.getAvailable();
@@ -682,7 +748,7 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
     try {
       if (working) throw new Error('Wait for memory formation to finish or cancel it before continuing the episode.');
       await restoreFolderModel(ctx);
-      const character = selected(ctx)!; assertOwner(ctx, character); await service!.reconcile();
+      const character = selected(ctx)!; assertOwner(ctx, character); await refresh(ctx);
       if (catalog!.binding(ctx.cwd)?.enabled && !episode) {
         const date = event.text.match(/^\s*(?:date:\s*)?(\d{4}-\d{2}-\d{2}(?:T[^\s]+)?)/i)?.[1];
         if (!await setDate(ctx, date)) {
@@ -711,7 +777,7 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
     catch (error) { ctx.abort(); ctx.ui.notify(errorMessage(error), 'error'); return { messages }; }
     lastRecall = undefined;
     if (!character) return { messages };
-    assertOwner(ctx, character); remember(ctx); await service!.reconcile();
+    assertOwner(ctx, character); remember(ctx); await refresh(ctx);
     if (catalog!.binding(ctx.cwd)?.enabled) {
       if (!episode) { ctx.abort(); ctx.ui.notify('Set this episode’s story date before requesting a reply.', 'error'); return { messages }; }
       const cue = messages.filter(message => message.role === 'user').map(message => textContent(message.content)).join('\n').slice(-6000);

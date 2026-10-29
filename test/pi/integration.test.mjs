@@ -167,7 +167,7 @@ test('Pi repair preserves samples after model and thinking changes; explicit reg
   f.session.setThinkingLevel('high');
   // Change Pi's route while the preview is open: the approved route must be retained.
   f.controls.onConfirm = async () => { f.controls.onConfirm = undefined; await f.session.setModel(f.session.modelRuntime.getModel('fixture', 'fixture')); };
-  f.choices.push('Regenerate with current model'); await f.command('menu');
+  f.choices.push('Memory', 'Regenerate with current model'); await f.command('menu');
   await f.until(() => f.notices.some(item => item.message.startsWith('Memory regenerated:')));
   const preview = f.inspections.find(text => text.includes('Review full memory regeneration'));
   assert.match(preview, /Provider\/model: fixture\/local-roleplay/);
@@ -338,7 +338,7 @@ test('story dates can be corrected repeatedly before play and stay fixed after p
   await f.command('when 2020-01-01 Mistyped');
   await f.command('when 2010-01-01 Corrected');
   await f.command('when 2030-01-01');
-  f.choices.push('Story date'); f.inputs.push('2015-01-01 The lighthouse');
+  f.choices.push('Episodes & dates', 'Story date'); f.inputs.push('2015-01-01 The lighthouse');
   await f.command('menu');
   assert.match(f.widgets.get('reverie')[0], /2015-01-01/);
   assert.equal(f.requests.length, 0);
@@ -426,7 +426,7 @@ test('legacy date-only episodes can be recovered or deleted from episode chats',
   const first = randomUUID(), second = randomUUID();
   await legacyDate(f, first, '2026-04-29', 'The elevator');
   await legacyDate(f, second, '2026-10-29', 'Mistyped');
-  f.choices.push('Episode chats', 0, 'Resume'); await f.command('menu');
+  f.choices.push('Episodes & dates', 'Episode chats', 0, 'Resume'); await f.command('menu');
   assert.equal(f.manager.getSessionId(), first);
   assert.match(f.widgets.get('reverie')[0], /2026-04-29/);
   assert.deepEqual(extractSource(f.manager.getBranch()).messages, []);
@@ -846,6 +846,92 @@ test('Pi backup restores into another folder, resumes the selected reply and han
   await restored.command('on'); await restored.session.prompt('I return to the lighthouse.'); await restored.command('rebuild');
   await restored.until(() => restored.notices.some(item => item.message.startsWith('Memory updated:')));
   assert.equal(restored.errors.length, 0, JSON.stringify(restored.errors));
+});
+
+test('relative gap placement resolves duplicate anchors explicitly, previews the date and preserves future isolation', async t => {
+  const f = await fixture(t); await f.setup();
+  await memorizeEpisode(f, '2000-01-01', 'The lighthouse');
+  await f.command('when 2000-01-02');
+  await memorizeEpisode(f, '2020-01-01', 'The lighthouse');
+  const current = f.manager.getSessionId(), requests = f.requests.length;
+  f.choices.push('Start episode in a gap', 1, 0); f.inputs.push('three days after The lighthouse', 'Between');
+  f.controls.confirmDelete = false; await f.command('chats');
+  assert.match(f.controls.lastConfirmation.message, /2000-01-05T00:00:00.000Z/);
+  assert.match(f.controls.lastConfirmation.message, /one-time resolved date/);
+  assert.equal(f.manager.getSessionId(), current);
+  assert.ok(f.menus.some(menu => menu.title === 'Choose the relative date anchor' && menu.options.length === 2));
+  f.controls.confirmDelete = true;
+  f.choices.push('Start episode in a gap', 1, 0); f.inputs.push('three days after The lighthouse', 'Between');
+  await f.command('chats');
+  assert.match(f.widgets.get('reverie')[0], /2000-01-05/);
+  assert.equal(f.requests.length, requests);
+  await f.session.prompt('We return between scenes.');
+  assert.doesNotMatch(JSON.stringify(f.requests.at(-1)), /Choose the relative date anchor|one-time resolved date|I remember The lighthouse.*2020/);
+  assert.equal(f.errors.length, 0);
+});
+
+test('episode re-date preserves source and branch times through new jumps, repeated shifts and restart', async t => {
+  const f = await fixture(t); await f.setup();
+  f.inputs.push('2000-01-01 The lighthouse'); await f.session.prompt('It is January first.');
+  const firstLeaf = f.manager.getLeafId();
+  await f.command('when 2000-01-04'); await f.session.prompt('Three days pass.');
+  const id = f.manager.getSessionId(), leaf = f.manager.getLeafId();
+  const source = extractSource(f.manager.getBranch()), entries = structuredClone(f.manager.getEntries()), requests = f.requests.length;
+  f.controls.confirmDelete = false; await f.command(`redate ${id} 2000-02-01`);
+  assert.match(f.inspections.at(-1), /After: 2000-02-01.*→ 2000-02-04/);
+  assert.match(f.inspections.at(-1), /Source continuity may need your attention/);
+  assert.match(f.widgets.get('reverie')[0], /2000-01-04/);
+  f.controls.confirmDelete = true; f.choices.push(0, 'Re-date episode'); f.inputs.push('2000-02-01'); await f.command('chats');
+  assert.match(f.widgets.get('reverie')[0], /2000-02-04/);
+  assert.equal(f.manager.getSessionId(), id); assert.equal(f.manager.getLeafId(), leaf);
+  assert.deepEqual(f.manager.getEntries(), entries); assert.deepEqual(extractSource(f.manager.getBranch()), source);
+  assert.equal(f.requests.length, requests);
+  await f.session.navigateTree(firstLeaf, { summarize: false });
+  assert.match(f.widgets.get('reverie')[0], /2000-02-01/);
+  await f.command('when 2000-02-02');
+  await f.command(`redate ${id} 2000-03-01`);
+  assert.match(f.widgets.get('reverie')[0], /2000-03-02/);
+  const path = f.manager.getSessionFile(); await f.close();
+  const restarted = await fixture(t, { root: f.root, path });
+  assert.match(restarted.widgets.get('reverie')[0], /2000-03-02/);
+  await restarted.session.navigateTree(leaf, { summarize: false });
+  assert.match(restarted.widgets.get('reverie')[0], /2000-03-04/);
+  assert.deepEqual(extractSource(restarted.manager.getBranch()), source);
+  // A date move in a second native process is picked up before the next reply.
+  await withNativeMemory(restarted, async client => {
+    const state = await client.request('status');
+    const move = await client.request('previewRedate', { episodeId: id, revision: state.revision, position: '2000-04-01' });
+    await client.request('applyRedate', { token: move.token });
+  });
+  await restarted.session.prompt('Continue after the move.');
+  assert.match(restarted.widgets.get('reverie')[0], /2000-04-04/);
+  const catalog = new Catalog(f.home);
+  try {
+    const reply = restarted.manager.getBranch().findLast(entry => entry.type === 'message' && entry.message.role === 'assistant');
+    assert.equal(catalog.recall(reply.id).at, Date.UTC(2000, 3, 4));
+  } finally { catalog.close(); }
+  assert.equal(f.errors.length + restarted.errors.length, 0);
+});
+
+test('re-date preview lists dependent memories and corrections, cancels cleanly and rejects a concurrent change', async t => {
+  const f = await fixture(t); await f.setup();
+  const early = await memorizeEpisode(f, '2000-01-01', 'Early');
+  await memorizeEpisode(f, '2020-01-01', 'Later'); await correctCurrentMemory(f);
+  const before = await memorySnapshot(f), requests = f.requests.length;
+  f.controls.confirmDelete = false; await f.command(`redate ${early} 2010-01-01`);
+  assert.match(f.inspections.at(-1), /Early.*recollections[\s\S]*Later.*impressions/);
+  assert.match(f.inspections.at(-1), /Release reviewed corrections.*Later/);
+  assert.deepEqual(await memorySnapshot(f), before);
+  f.controls.confirmDelete = true;
+  f.controls.onConfirm = async () => { f.controls.onConfirm = undefined; await legacyDate(f, randomUUID(), '2040-01-01', 'Racing edit'); };
+  await f.command(`redate ${early} 2010-01-01`);
+  assert.match(f.notices.at(-1).message, /changed after the preview/);
+  assert.equal((await memorySnapshot(f)).episodes.find(item => item.episode.id === early).episode.start, Date.UTC(2000, 0, 1));
+  await f.command(`redate ${early} 2010-01-01`);
+  const after = await memorySnapshot(f);
+  assert.ok(after.episodes.filter(item => item.episode.included).every(item => item.state === 'invalidated' && !item.correction));
+  assert.equal(f.requests.length, requests);
+  assert.equal(f.errors.length, 0);
 });
 
 test('episode history exposes full intervals and memory, and starts a scene in a gap without future recall', async t => {

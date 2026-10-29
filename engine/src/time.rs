@@ -17,14 +17,19 @@ pub fn assert_intervals(episodes: &[crate::model::Episode]) -> Result<()> {
                 "An episode cannot end before it starts.",
             ));
         }
-        if previous
-            .is_some_and(|previous| current.start == previous.start || current.start < previous.now)
+        if let Some(previous) = previous
+            .filter(|previous| current.start == previous.start || current.start < previous.now)
         {
             return Err(Error::new(
                 "INTERLEAVING_EPISODES",
                 format!(
-                    "The episode “{}” overlaps another episode. Episodes must occupy separate chronological slots.",
-                    current.label
+                    "“{}” ({} → {}) overlaps “{}” ({} → {}). Choose a start that leaves the entire episode interval in a separate chronological slot.",
+                    current.label,
+                    iso(current.start)?,
+                    iso(current.now)?,
+                    previous.label,
+                    iso(previous.start)?,
+                    iso(previous.now)?
                 ),
             ));
         }

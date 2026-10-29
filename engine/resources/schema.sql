@@ -34,4 +34,3 @@
         PRIMARY KEY(character_id,episode_id),
         FOREIGN KEY(character_id,episode_id) REFERENCES episodes(character_id,id) ON DELETE CASCADE
       );
-      PRAGMA user_version=2;

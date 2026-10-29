@@ -9,6 +9,7 @@
 | Personality | Edit in the terminal; character foundation is recorded in played source. |
 | Replies | Reroll/cycle via Pi branches, with persistent selected alternatives and no rejected-branch summaries. |
 | Time | Explicit Gregorian dates/zoned timestamps; selected branches restore their fictional point. Episodes do not interleave. |
+| Chronology planning | Relative dates resolve once from an anchor's end (after) or start (before), with explicit duplicate-anchor selection. Re-dating translates the selected interval and all branch time entries equally; previewed affected derivatives and corrections are invalidated atomically. |
 | Memory | Whole-episode reflection on explicit memorization; local lexical retrieval before replies. |
 | Deletion | Model-independent removal and dependent-derivative invalidation; durable reconciliation for host/external deletion. |
 | Distribution | Public Apache-2.0 source; local Windows x64 package with bundled license notices. npm registry publication is pending; unsupported platforms fail explicitly. |
@@ -17,7 +18,7 @@
 
 - Sustained-play quality and tuning of subjective recall.
 - Broader platform and Pi-version coverage.
-- Relative placement, fantasy calendars, and a visual timeline.
+- Fantasy calendars and a visual timeline.
 - Handling episodes exceeding the reflection model's context window.
 - Semantic retrieval if lexical cue matching proves insufficient.
 - A public package registry release and signing.
