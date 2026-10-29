@@ -2,6 +2,8 @@
 
 The native and real-Pi SDK tests use deterministic local models and authored scenes. They compare actual generated context and validate output attribution. They do not measure live-model emotional or literary quality; sustained-play quality remains open.
 
+The opt-in `node scripts/evaluate-recall-history.mjs` harness runs a reply and native-validated reflection for each condition in the two authored scenes below (eight model calls total). It uses the configured Pi model and keeps authentication refreshes in memory, synthetic source and output under `.work/recall-history-evaluation`, and model-cache writes in that same isolated folder. Explicit `--provider`, `--model` and `--thinking` options allow a user-selected route without changing saved defaults. No private stories are read. An attempted run on 2026-10-29 could not start because the OpenAI login's refresh token had been invalidated; a fresh Pi sign-in is required. No live quality result is claimed yet.
+
 ## Departure and return after retrieval shifts
 
 Earlier memory: Mara fears abandonment. Current scene: the player steps out, Mara expresses fear, the player returns, and Mara expresses reassurance. A harbor topic then displaces the abandonment memory in fresh retrieval.

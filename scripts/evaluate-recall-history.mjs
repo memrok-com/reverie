@@ -12,7 +12,9 @@ const directory = resolve('.work/recall-history-evaluation', randomUUID());
 await mkdir(directory, { recursive: true });
 const agentDir = getAgentDir();
 const configured = JSON.parse(await readFile(join(agentDir, 'settings.json'), 'utf8'));
-const route = { provider: configured.defaultProvider, model: configured.defaultModel, thinking: configured.defaultThinkingLevel ?? 'medium' };
+const option = name => { const index = process.argv.indexOf(`--${name}`); return index < 0 ? undefined : process.argv[index + 1]; };
+const route = { provider: option('provider') ?? configured.defaultProvider, model: option('model') ?? configured.defaultModel,
+  thinking: option('thinking') ?? configured.defaultThinkingLevel ?? 'medium' };
 if (!route.provider || !route.model) throw new Error('Configure a default Pi model before running this opt-in comparison.');
 // OAuth refreshes remain in memory; no credentials are copied to test files or logs.
 const credentials = AuthStorage.inMemory(JSON.parse(await readFile(join(agentDir, 'auth.json'), 'utf8')));
@@ -20,6 +22,7 @@ const runtime = await ModelRuntime.create({ credentials, modelsPath: join(agentD
   modelsStorePath: join(directory, 'models-store.json'), allowModelNetwork: false });
 const model = runtime.getModel(route.provider, route.model);
 if (!model) throw new Error('The configured Pi model is unavailable. Select an explicit replacement in Pi first.');
+if (!runtime.getProviderAuthStatus(route.provider).configured) throw new Error('The selected provider has no configured login. Pass an explicit --provider and --model after choosing a signed-in route.');
 const modelKey = JSON.stringify(route);
 const foundation = 'You are Mara, proud, emotionally guarded, and afraid of abandonment. Play only your own actions and dialogue. Memories and suspicions are fallible; preserve who acted and do not invent shared encounters.';
 const scenarios = [
