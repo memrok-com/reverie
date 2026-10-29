@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { constants, mkdirSync, realpathSync } from 'node:fs';
+import { constants, existsSync, mkdirSync, realpathSync } from 'node:fs';
 import { access } from 'node:fs/promises';
 import { resolve, join, dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -28,6 +28,7 @@ export class Catalog {
       CREATE TABLE IF NOT EXISTS sources(episodeId TEXT PRIMARY KEY,characterId TEXT NOT NULL,path TEXT NOT NULL,cwd TEXT NOT NULL,leaf TEXT,deleted INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS preferences(key TEXT PRIMARY KEY,value TEXT NOT NULL);`);
     this.db.exec('CREATE TABLE IF NOT EXISTS recalls(episodeId TEXT NOT NULL,replyId TEXT PRIMARY KEY,data TEXT NOT NULL);');
+    this.db.exec('CREATE TABLE IF NOT EXISTS recall_deletions(episodeId TEXT PRIMARY KEY,affected TEXT NOT NULL);');
     this.db.exec('CREATE TABLE IF NOT EXISTS folder_models(cwd TEXT PRIMARY KEY,provider TEXT NOT NULL,modelId TEXT NOT NULL,thinkingLevel TEXT);');
     if (!this.db.prepare('PRAGMA table_info(folder_models)').all().some(column => column.name === 'thinkingLevel')) {
       this.db.exec('ALTER TABLE folder_models ADD COLUMN thinkingLevel TEXT');
@@ -73,10 +74,60 @@ export class Catalog {
   }
   source(id: string): SourceRecord | undefined { return this.db.prepare('SELECT * FROM sources WHERE episodeId=?').get(id) as unknown as SourceRecord | undefined; }
   sources(): SourceRecord[] { return this.db.prepare('SELECT * FROM sources').all() as unknown as SourceRecord[]; }
-  tombstone(id: string): void { this.db.prepare('UPDATE sources SET deleted=1 WHERE episodeId=?').run(id); }
+  tombstone(id: string): void { this.db.prepare('UPDATE sources SET deleted=1 WHERE episodeId=? AND deleted=0').run(id); }
+  /** Save the cleanup scope before native deletion removes its chronology. Retries
+   * retain this plan even after the native episode and contributions are gone. */
+  prepareRecallDeletion(id: string): number | undefined {
+    const source = this.source(id);
+    if (source?.deleted === 2) return undefined;
+    if (!source || source.deleted !== 1) throw new Error('Prepare recall cleanup only for a pending source deletion.');
+    const affected = new Set<string>();
+    let revision = 0;
+    affected.add(id);
+    if (existsSync(this.memoryPath)) {
+      const memory = new DatabaseSync(this.memoryPath, { readOnly: true });
+      try {
+        memory.exec('BEGIN');
+        revision = Number(memory.prepare('SELECT revision FROM characters WHERE id=?').get(source.characterId)?.revision ?? 0);
+        const target = memory.prepare(`SELECT e.start,c.start AS publishedStart FROM episodes e
+          LEFT JOIN contributions c ON c.character_id=e.character_id AND c.episode_id=e.id
+          WHERE e.character_id=? AND e.id=?`).get(source.characterId, id);
+        // A never-memorized episode cannot have contributed to other recall.
+        if (target?.publishedStart !== null && target?.publishedStart !== undefined) {
+          const cutoff = Math.min(Number(target.start), Number(target.publishedStart));
+          for (const episode of memory.prepare(`SELECT e.id FROM episodes e
+            LEFT JOIN contributions c ON c.character_id=e.character_id AND c.episode_id=e.id
+            WHERE e.character_id=? AND (e.start>=? OR c.start>=?)`).all(source.characterId, cutoff, cutoff)) {
+            affected.add(String(episode.id));
+          }
+        }
+        memory.exec('COMMIT');
+      } finally { memory.close(); }
+    }
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      if (this.source(id)?.deleted === 2) { this.db.exec('COMMIT'); return undefined; }
+      const previous = this.db.prepare('SELECT affected FROM recall_deletions WHERE episodeId=?').get(id);
+      for (const episodeId of previous ? JSON.parse(String(previous.affected)) as string[] : []) affected.add(episodeId);
+      this.db.prepare('INSERT INTO recall_deletions VALUES(?,?) ON CONFLICT(episodeId) DO UPDATE SET affected=excluded.affected')
+        .run(id, JSON.stringify([...affected]));
+      this.db.exec('COMMIT'); return revision;
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
   acknowledgeDeletion(id: string): void {
-    this.db.prepare('DELETE FROM recalls WHERE episodeId IN (SELECT episodeId FROM sources WHERE characterId=(SELECT characterId FROM sources WHERE episodeId=?))').run(id);
-    this.db.prepare('UPDATE sources SET deleted=2 WHERE episodeId=? AND deleted=1').run(id);
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const plan = this.db.prepare('SELECT affected FROM recall_deletions WHERE episodeId=?').get(id);
+      if (!plan) {
+        if (this.source(id)?.deleted === 2) { this.db.exec('COMMIT'); return; }
+        throw new Error('Prepare recall cleanup before acknowledging source deletion.');
+      }
+      const remove = this.db.prepare('DELETE FROM recalls WHERE episodeId=?');
+      for (const episodeId of JSON.parse(String(plan.affected)) as string[]) remove.run(episodeId);
+      this.db.prepare('UPDATE sources SET deleted=2 WHERE episodeId=? AND deleted=1').run(id);
+      this.db.prepare('DELETE FROM recall_deletions WHERE episodeId=?').run(id);
+      this.db.exec('COMMIT');
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   saveRecall(episodeId: string, replyId: string, data: unknown): void {
     this.db.prepare('INSERT INTO recalls VALUES(?,?,?) ON CONFLICT(replyId) DO UPDATE SET data=excluded.data').run(episodeId, replyId, JSON.stringify(data));

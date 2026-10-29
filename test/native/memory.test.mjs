@@ -551,7 +551,9 @@ test('bounded earlier activation survives shifted retrieval and connects backgro
   await f.request('memorize', { episodeId: 'return' });
   const request = f.calls.at(-1).request, history = request.input.recallHistory[0];
   assert.equal(history.promptId, 'm1'); assert.equal(history.replyId, 'm2'); assert.equal(history.episodeId, 'e1');
-  assert.deepEqual(history.originalSourceMessageIds, ['abandonment:user']);
+  assert.equal(history.recollectionId, 'e1.r1');
+  for (const key of ['originalSourceMessageIds', 'sourceMessageIds', 'contributionHash', 'memoryIndex', 'detailSupplied']) assert.equal(key in history, false);
+  assert.ok(!JSON.stringify(history).includes('abandonment:user'));
   assert.match(request.system, /Do not copy old events/);
   assert.deepEqual(f.contributions().at(-1).memories[0].sourceMessageIds, ['fear', 'relief']);
   assert.equal(f.contributions().at(-1).memories.length, 1);
@@ -564,6 +566,25 @@ test('bounded earlier activation survives shifted retrieval and connects backgro
   assert.equal(f.calls.at(-1).request.input.recallHistory, undefined);
   assert.equal(f.contributions().at(-1).memories[0].gist, 'You left and returned; I felt relief.');
   assert.equal((await f.request('memorize', { episodeId: 'return' })).status, 'current');
+});
+
+test('candidate references distinguish duplicate prose by stored episode order across restart and republication', async t => {
+  const f = fixture(t, { settings: { topK: 1 }, infer: request => {
+    const result = reflection(request), memory = { ...result.memories[0], confidence: 0.12345678901234568, salience: 0.6123456789012346 };
+    result.memories = [{ ...memory, cues: ['alpha'] }, { ...memory, cues: ['beta'] }]; return result;
+  } });
+  await f.episode('old', '2000-01-01'); await f.request('memorize', { episodeId: 'old' });
+  await f.episode('current', '2010-01-01');
+  for (const phase of ['initial', 'restart', 'republication']) {
+    if (phase === 'restart') await f.restart();
+    if (phase === 'republication') await f.request('rebuild', { force: true });
+    for (const [cue, index] of [['alpha', 0], ['beta', 1]]) {
+      const recall = await f.request('retrieve', { episodeId: 'current', at: '2010-01-01', cue });
+      assert.equal(recall.memories.length, 1);
+      assert.equal(recall.memories[0].memoryIndex, index, phase + ': ' + cue);
+      assert.equal(recall.memories[0].contributionHash, f.contributions()[0].stateHash);
+    }
+  }
 });
 
 test('history selection balances recency and salience within eight distinct items and a strict serialized budget without reinforcement', async t => {

@@ -149,13 +149,21 @@ impl Reverie {
             "forget" => {
                 let id = required(&params, "episodeId")?;
                 identifier(id, "Episode identity")?;
+                let revision = params
+                    .get("revision")
+                    .map(|value| {
+                        value.as_i64().ok_or_else(|| {
+                            Error::new("INVALID_INPUT", "Deletion revision must be an integer.")
+                        })
+                    })
+                    .transpose()?;
                 // Deletion must take effect even if reflection is running or the model is offline.
                 // The revision change prevents any in-flight reflection from republishing old data.
-                let invalidated = self
-                    .store
-                    .lock()
-                    .unwrap()
-                    .forget_episode(&self.character_id, id)?;
+                let invalidated =
+                    self.store
+                        .lock()
+                        .unwrap()
+                        .forget_episode(&self.character_id, id, revision)?;
                 Ok(json!({"episodeId":id,"invalidatedEpisodes":invalidated}))
             }
             "assertEpisode" => {
@@ -830,7 +838,7 @@ impl Reverie {
                 "start":episode.start, "end":episode.now, "label":episode.label, "prefix":prefix, "settings":self.settings});
             // Empty history preserves the existing input contract and correction prefixes.
             if !recall_history.is_empty() {
-                inputs["recallHistoryVersion"] = json!(1);
+                inputs["recallHistoryVersion"] = json!(2);
                 inputs["recallHistory"] = json!(recall_history);
             }
             let input_hash = fingerprint(&inputs)?;
@@ -1002,6 +1010,9 @@ impl Reverie {
             ));
         }
         let store = self.store.lock().unwrap();
+        // Candidate row ordinals and their canonical contribution must come from
+        // the same snapshot even when another process publishes memory.
+        let _snapshot = store.db.unchecked_transaction()?;
         if !episode_id.is_empty() {
             store.assert_episode_owner(&self.character_id, episode_id)?;
         }
@@ -1057,19 +1068,14 @@ impl Reverie {
         };
         let mut ranked: Vec<_> = candidates
             .into_iter()
-            .filter_map(|row| {
-                let memory = row.memory;
+            .map(|row| -> Result<Recollection> {
                 let contribution = contributions
                     .iter()
-                    .find(|item| item.episode_id == row.episode_id)?;
-                let memory_index = contribution.memories.iter().position(|item| {
-                    item.gist == memory.gist
-                        && item.detail == memory.detail
-                        && item.feeling == memory.feeling
-                        && item.source_message_ids == memory.source_message_ids
-                        && item.salience == memory.salience
-                        && item.confidence == memory.confidence
-                })?;
+                    .find(|item| item.episode_id == row.episode_id)
+                    .ok_or_else(|| Error::new("INVALID_MEMORY", "A retrieval candidate has no published contribution. Rebuild memory before continuing."))?;
+                let memory_index = row.memory_index;
+                let memory = contribution.memories.get(memory_index).cloned()
+                    .ok_or_else(|| Error::new("INVALID_MEMORY", "A retrieval candidate has no published recollection. Rebuild memory before continuing."))?;
                 let age_days = (now - row.available_at).max(0) as f64 / DAY as f64;
                 let retention = (-std::f64::consts::LN_2 * age_days
                     / (self.settings.detail_half_life_days * (1.0 + 4.0 * memory.salience)))
@@ -1079,7 +1085,7 @@ impl Reverie {
                 } else {
                     0.0
                 };
-                Some(Recollection {
+                Ok(Recollection {
                     id: row.id,
                     episode_id: row.episode_id,
                     contribution_hash: contribution.state_hash.clone(),
@@ -1099,7 +1105,7 @@ impl Reverie {
                     source_message_ids: memory.source_message_ids,
                 })
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
         ranked.sort_by(|a, b| b.score.total_cmp(&a.score).then(a.id.cmp(&b.id)));
         ranked.truncate(self.settings.top_k);
         let shared_history=history.first.map(|first| format!("Your earliest remembered encounter was {}. Your remembered connection has gaps; they do not imply continuous contact.",elapsed_description(now-first))).unwrap_or_default();

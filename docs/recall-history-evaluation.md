@@ -27,7 +27,7 @@ For re-memorization with changed source, correction, withdrawal, deletion, and f
 
 ## Live comparison on 2026-10-29
 
-Ran `node scripts/evaluate-recall-history.mjs --provider openai --model gpt-6.1-sol --thinking medium` using the explicitly selected model. Full prompts, outputs, published contributions and SDK usage are in [the raw comparison record](../validation/recall-history-live.json).
+Ran `node scripts/evaluate-recall-history.mjs --provider openai --model gpt-6.1-sol --thinking medium` using the explicitly selected model. The recorded run was refreshed after review removed internal fields and raw background IDs from reflection history; it uses the current alias-only projection. Full prompts, outputs, published contributions and SDK usage are in [the raw comparison record](../validation/recall-history-live.json).
 
 Each scene has one baseline reply/reflection pair and one history pair. Condition order is reversed for the second scene. Earlier memories are authored fixtures; current replies and reflections are live model outputs. The roleplay continuation is evaluated separately from reflection so each reflection sees exactly the same four played messages. Baseline and history contributions have identical played-source hashes in both scenes.
 

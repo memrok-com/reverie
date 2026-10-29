@@ -346,7 +346,7 @@ pub fn request(
     }, "maxTokens": settings.reflection_max_tokens });
     if !recall_history.is_empty() {
         request["system"] = json!(format!(
-            "{}\n{}\nConnect recalled background only to reactions supported by current played messages. Do not copy old events into this episode's memories. Cite current message IDs for new recollections; original background message IDs are provenance, not current evidence.",
+            "{}\n{}\nConnect recalled background only to reactions supported by current played messages. Do not copy old events into this episode's memories. Historical episode/recollection aliases identify recalled background; cite current message IDs for new recollections.",
             SYSTEM.trim_end(),
             crate::history::GUIDANCE
         ));
@@ -360,20 +360,16 @@ pub fn request(
             recall_history
                 .iter()
                 .map(|item| {
-                    let mut value = serde_json::to_value(item).unwrap();
-                    value["replyId"] = json!(messages[item.reply_id.as_str()]);
-                    value["promptId"] = json!(messages[item.prompt_id.as_str()]);
-                    value["episodeId"] = json!(aliases[item.reference.episode_id.as_str()]);
-                    value["firstSupplied"]["replyId"] =
-                        json!(messages[item.first_supplied.reply_id.as_str()]);
-                    value["firstSupplied"]["promptId"] =
-                        json!(messages[item.first_supplied.prompt_id.as_str()]);
-                    value["originalSourceMessageIds"] = value
-                        .as_object_mut()
-                        .unwrap()
-                        .remove("sourceMessageIds")
-                        .unwrap();
-                    value
+                    json!({
+                        "episodeId": aliases[item.reference.episode_id.as_str()],
+                        "recollectionId": format!("{}.r{}", aliases[item.reference.episode_id.as_str()], item.reference.memory_index + 1),
+                        "replyId": messages[item.reply_id.as_str()],
+                        "promptId": messages[item.prompt_id.as_str()], "at": item.at,
+                        "firstSupplied": { "replyId": messages[item.first_supplied.reply_id.as_str()],
+                            "promptId": messages[item.first_supplied.prompt_id.as_str()], "at": item.first_supplied.at },
+                        "gist": item.gist, "detail": item.detail, "feeling": item.feeling,
+                        "confidence": item.confidence, "salience": item.salience,
+                    })
                 })
                 .collect::<Vec<_>>()
         );

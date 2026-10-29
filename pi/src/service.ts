@@ -55,7 +55,11 @@ export class MemoryService {
     this.reconciling = (async () => {
       let invalidated = 0;
       for (const source of await this.catalog.missingSources(this.onSourceUnavailable)) {
-        const result = await this.client(source.characterId).request('forget', { episodeId: source.episodeId });
+        const client = this.client(source.characterId);
+        await client.request('ping'); // Ensure native schema exists before reading cleanup chronology.
+        const revision = this.catalog.prepareRecallDeletion(source.episodeId);
+        if (revision === undefined) continue;
+        const result = await client.request('forget', { episodeId: source.episodeId, revision });
         invalidated += result.invalidatedEpisodes;
         this.catalog.acknowledgeDeletion(source.episodeId);
       }
