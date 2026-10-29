@@ -9,7 +9,7 @@ import { AssistantMessageEventStream } from '@earendil-works/pi-ai';
 import { registerReverie } from '../../.work/pi-test/extension.mjs';
 import { Catalog } from '../../.work/pi-test/catalog.mjs';
 import { MemoryClient } from '../../.work/pi-test/memory-client.mjs';
-import { alternatives, extractSource } from '../../.work/pi-test/source.mjs';
+import { alternatives, extractSource, readBranchFile } from '../../.work/pi-test/source.mjs';
 import { recallHistory } from '../../.work/pi-test/recall-history.mjs';
 import { reflection } from '../fixtures/subjective.mjs';
 import { nativeEnginePath } from '../../scripts/lib/native-toolchain.mjs';
@@ -29,7 +29,7 @@ async function fixture(t, existing) {
   let draft = '', replies = 0;
   const controls = { holdReflection: false, reflectionStarted: false, replyFailure: undefined, reflectionFailure: false, confirmDelete: true,
     holdInspectionDialog: false, dialogStarted: false, releaseDialog: undefined, releaseReflection: undefined,
-    onConfirm: undefined, lastConfirmation: undefined };
+    onConfirm: undefined, lastConfirmation: undefined, reflect: reflection };
   const streamSimple = (_model, context, options) => {
     const stream = new AssistantMessageEventStream();
     queueMicrotask(() => {
@@ -40,7 +40,7 @@ async function fixture(t, existing) {
       const userText = typeof last?.content === 'string' ? last.content : last?.content?.filter(item => item.type === 'text').map(item => item.text).join('\n');
       let input;
       try { input = JSON.parse(userText); } catch {}
-      const text = input?.episode ? JSON.stringify(reflection({ input })) : `Reply ${++replies}: I remember the blue lantern.`;
+      const text = input?.episode ? JSON.stringify(controls.reflect({ input })) : `Reply ${++replies}: I remember the blue lantern.`;
       const reply = { role: 'assistant', content: [{ type: 'text', text }], api: model.api, provider: model.provider, model: model.id,
         usage: { input: 10, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 20, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: 'stop', timestamp: Date.now() };
       if (input?.episode && controls.reflectionFailure) {
@@ -112,6 +112,165 @@ async function legacyDate(f, id, date, label) {
   try { await client.request('when', { episodeId: id, position: date, label }); }
   finally { await client.close(); catalog.close(); }
 }
+
+async function withNativeMemory(f, run) {
+  const catalog = new Catalog(f.home);
+  const client = new MemoryClient({ executable, database: catalog.memoryPath, characterId: catalog.characters()[0].id,
+    readSource: async id => { const source = catalog.source(id); return extractSource(await readBranchFile(source.path, source.leaf)); },
+    infer: async () => { throw new Error('This observer does not form memory.'); } });
+  try { return await run(client); } finally { await client.close(); catalog.close(); }
+}
+const memorySnapshot = f => withNativeMemory(f, client => client.request('inspect'));
+
+async function memorizeEpisode(f, date, label) {
+  if (f.manager.getBranch().some(entry => entry.type === 'message')) await f.runtime.newSession();
+  f.inputs.push(`${date} ${label}`); await f.session.prompt('I hold a blue lantern.');
+  const reviews = f.inspections.filter(text => text.includes('Published episode review')).length;
+  await f.command('memorize');
+  await f.until(() => f.inspections.filter(text => text.includes('Published episode review')).length === reviews + 1);
+  return f.manager.getSessionId();
+}
+
+test('regeneration with no included episodes explains that memorization is needed without a confirmation or model call', async t => {
+  const f = await fixture(t); await f.setup();
+  await f.command('regenerate');
+  assert.match(f.notices.at(-1).message, /No included episodes.*Memorize/);
+  assert.equal(f.controls.lastConfirmation, undefined);
+  assert.equal(f.requests.length, 0);
+  assert.equal(f.errors.length, 0);
+});
+
+test('Pi repair preserves samples after model and thinking changes; explicit regeneration previews its scope and captures its route', async t => {
+  const f = await fixture(t); await f.setup();
+  await memorizeEpisode(f, '2000-01-01', 'First');
+  await memorizeEpisode(f, '2010-01-01', 'Second');
+  const withdrawn = await memorizeEpisode(f, '2020-01-01', 'Withdrawn');
+  const updates = f.notices.filter(item => item.message.startsWith('Memory updated:')).length;
+  await f.command('unmemorize');
+  await f.until(() => f.notices.filter(item => item.message.startsWith('Memory updated:')).length === updates + 1);
+  const before = await memorySnapshot(f), calls = f.requests.length;
+  f.choices.push('fixture/local-roleplay'); await f.command('model'); f.session.setThinkingLevel('high');
+  await f.command('rebuild'); await f.until(() => f.notices.at(-1)?.message === 'Memory is already current.');
+  assert.equal(f.requests.length, calls);
+  assert.deepEqual(await memorySnapshot(f), before);
+  f.session.setThinkingLevel('low');
+  const currentNotices = f.notices.filter(item => item.message === 'Memory is already current.').length;
+  await f.command('rebuild');
+  await f.until(() => f.notices.filter(item => item.message === 'Memory is already current.').length === currentNotices + 1);
+  assert.equal(f.requests.length, calls);
+  assert.deepEqual(await memorySnapshot(f), before);
+  f.session.setThinkingLevel('high');
+  // Change Pi's route while the preview is open: the approved route must be retained.
+  f.controls.onConfirm = async () => { f.controls.onConfirm = undefined; await f.session.setModel(f.session.modelRuntime.getModel('fixture', 'fixture')); };
+  f.choices.push('Regenerate with current model'); await f.command('menu');
+  await f.until(() => f.notices.some(item => item.message.startsWith('Memory regenerated:')));
+  const preview = f.inspections.find(text => text.includes('Review full memory regeneration'));
+  assert.match(preview, /Provider\/model: fixture\/local-roleplay/);
+  assert.match(preview, /Thinking level: high/);
+  assert.match(preview, /all 2 included episodes/);
+  assert.match(preview, /Withdrawn episodes stay excluded/);
+  assert.match(preview, /new model calls.*costs.*change existing recollections and impressions/);
+  assert.match(preview, /Reviewed recollections are preserved/);
+  assert.match(preview, /\/reverie cancel/);
+  assert.equal(f.controls.lastConfirmation.title, 'Regenerate with current model?');
+  assert.match(f.controls.lastConfirmation.message, /all 2 included episodes/);
+  assert.match(f.controls.lastConfirmation.message, /fixture\/local-roleplay · Thinking high/);
+  assert.deepEqual(f.requestedModels.slice(calls), ['fixture/local-roleplay', 'fixture/local-roleplay']);
+  assert.deepEqual(f.requestedThinking.slice(calls), ['high', 'high']);
+  const after = await memorySnapshot(f);
+  assert.ok(after.episodes.filter(item => item.episode.included).every(item => JSON.parse(item.contribution.modelKey).model === 'local-roleplay'));
+  assert.equal(after.episodes.find(item => item.episode.id === withdrawn).contribution, null);
+  assert.equal(after.episodes.find(item => item.episode.id === withdrawn).episode.included, false);
+  assert.equal(f.requests.length, calls + 2);
+  assert.equal(f.errors.length, 0, JSON.stringify(f.errors));
+});
+
+test('cancelling the regeneration preview leaves published memory and played source unchanged without model calls', async t => {
+  const f = await fixture(t); await f.setup(); await memorizeEpisode(f, '2000-01-01', 'First');
+  const before = await memorySnapshot(f), calls = f.requests.length, entries = f.manager.getEntries();
+  f.controls.confirmDelete = false;
+  await f.command('regenerate');
+  assert.equal(f.controls.lastConfirmation.title, 'Regenerate with current model?');
+  assert.match(f.controls.lastConfirmation.message, /all 1 included episode\./);
+  assert.equal(f.requests.length, calls);
+  assert.deepEqual(await memorySnapshot(f), before);
+  assert.deepEqual(f.manager.getEntries(), entries);
+  assert.equal(f.errors.length, 0);
+});
+
+test('cancelled or failed regeneration after staging an earlier episode preserves all published contributions atomically', async t => {
+  const f = await fixture(t); await f.setup();
+  await memorizeEpisode(f, '2000-01-01', 'First'); await memorizeEpisode(f, '2010-01-01', 'Second');
+  const before = await memorySnapshot(f), entries = f.manager.getEntries();
+  for (const mode of ['cancel', 'failure']) {
+    const calls = f.requests.length, errors = f.notices.filter(item => item.level === 'error').length;
+    f.controls.reflectionFailure = false; f.controls.holdReflection = false; f.controls.reflectionStarted = false;
+    f.controls.reflect = request => {
+      const result = reflection(request); result.memories[0].detail += ' A newly sampled detail.';
+      if (request.input.episode.label === 'Second') {
+        f.controls.holdReflection = mode === 'cancel'; f.controls.reflectionFailure = mode === 'failure';
+      }
+      return result;
+    };
+    await f.command('regenerate');
+    if (mode === 'cancel') {
+      await f.until(() => f.controls.reflectionStarted);
+      assert.deepEqual(await memorySnapshot(f), before, 'Staged changes must remain unpublished during the second reflection.');
+      await f.command('cancel');
+    }
+    await f.until(() => f.notices.filter(item => item.level === 'error').length === errors + 1);
+    assert.match(f.notices.filter(item => item.level === 'error').at(-1).message, mode === 'cancel' ? /cancel/i : /Reflection failed/);
+    assert.equal(f.requests.length, calls + 2, 'The earlier episode completed before cancellation/failure in the second.');
+    assert.deepEqual(await memorySnapshot(f), before);
+    assert.deepEqual(f.manager.getEntries(), entries);
+  }
+  assert.ok(!f.notices.some(item => item.message.startsWith('Memory regenerated:')));
+  assert.equal(f.errors.length, 0, JSON.stringify(f.errors));
+});
+
+test('regeneration preserves reviewed recollections and explains a later correction blocker without publishing or releasing it', async t => {
+  const f = await fixture(t); await f.setup();
+  const firstId = await memorizeEpisode(f, '2000-01-01', 'First');
+  const correct = async () => {
+    f.choices.push('Correct a recollection', 0); f.editors.push('The player held the lantern.', 'A blue lantern.', 'I felt unsettled.');
+    f.inputs.push(extractSource(f.manager.getBranch()).messages[0].id); await f.command('memory episode');
+  };
+  await correct();
+  const reviewed = (await memorySnapshot(f)).episodes[0];
+  await f.command('regenerate'); await f.until(() => f.notices.some(item => item.message.startsWith('Memory regenerated:')));
+  const first = (await memorySnapshot(f)).episodes[0];
+  assert.deepEqual(first.contribution.memories, reviewed.contribution.memories);
+  assert.deepEqual(first.correction, reviewed.correction);
+  await memorizeEpisode(f, '2010-01-01', 'Second'); await correct();
+  const before = await memorySnapshot(f), calls = f.requests.length;
+  f.controls.reflect = request => { const result = reflection(request); result.impressions[0].text += ' A changed impression.'; return result; };
+  await f.command('regenerate');
+  await f.until(() => f.notices.some(item => item.level === 'error' && /Earlier memory changed beneath/.test(item.message)));
+  assert.equal(f.requests.length, calls + 1, 'Regeneration stops before rewriting the later reviewed contribution.');
+  assert.deepEqual(await memorySnapshot(f), before);
+  assert.match(f.notices.at(-1).message, /Last published memory is retained.*\/reverie memory browse.*Release correction.*invalidation preview.*\/reverie regenerate/);
+  assert.match(JSON.stringify(f.requests.at(-1)), /reviewedRecollections/);
+  const path = f.manager.getSessionFile(); await f.close();
+  const restarted = await fixture(t, { root: f.root, path });
+  const durable = await memorySnapshot(restarted);
+  assert.deepEqual(durable, before);
+  assert.equal(durable.episodes.find(item => item.episode.id === firstId).correction.memories[0].gist, 'The player held the lantern.');
+  assert.equal(f.errors.length + restarted.errors.length, 0, JSON.stringify([...f.errors, ...restarted.errors]));
+});
+
+test('regeneration rejects a changed preview scope before making model calls', async t => {
+  const f = await fixture(t); await f.setup(); await memorizeEpisode(f, '2000-01-01', 'First');
+  const before = await memorySnapshot(f), calls = f.requests.length;
+  f.controls.onConfirm = async () => {
+    f.controls.onConfirm = undefined;
+    await withNativeMemory(f, client => client.request('when', { episodeId: randomUUID(), position: '2010-01-01', label: 'Another window' }));
+  };
+  await f.command('regenerate');
+  assert.match(f.notices.at(-1).message, /changed during the preview.*\/reverie regenerate/);
+  assert.equal(f.requests.length, calls);
+  assert.deepEqual((await memorySnapshot(f)).episodes[0], before.episodes[0]);
+  assert.equal(f.errors.length, 0);
+});
 
 test('real Pi input cancellation preserves an opening; persona, reroll, cycle, memory and restart work together', async t => {
   const f = await fixture(t); await f.setup();

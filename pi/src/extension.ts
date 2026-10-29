@@ -183,7 +183,7 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
   function route(ctx: ExtensionContext): string {
     assertFolderModel(ctx);
     if (!ctx.model) throw new Error('Select a model in Pi before forming memory.');
-    return JSON.stringify({ provider: ctx.model.provider, model: ctx.model.id, thinking: ctx.thinkingLevel });
+    return JSON.stringify({ provider: ctx.model.provider, model: ctx.model.id, thinking: ctx.thinkingLevel ?? pi.getThinkingLevel() });
   }
   async function show(ctx: ExtensionContext, title: string, text: string): Promise<void> {
     if (ctx.mode === 'tui' && ctx.ui.custom) {
@@ -280,7 +280,7 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
       }
     }
   }
-  async function operate(ctx: ExtensionCommandContext, action: 'memorize' | 'unmemorize' | 'rebuild'): Promise<void> {
+  async function operate(ctx: ExtensionCommandContext, action: 'memorize' | 'unmemorize' | 'rebuild' | 'regenerate'): Promise<void> {
     const character = selected(ctx)!; assertOwner(ctx, character);
     if (!catalog!.binding(ctx.cwd)?.enabled) throw new Error('Memory is off. Enable it with /reverie on first.');
     if (!ctx.isIdle() || working) throw new Error('Wait for the current response or memory operation.');
@@ -291,14 +291,46 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
     await restoreFolderModel(ctx);
     const modelKey = route(ctx), client = service!.client(character.id);
     const episodeId = ctx.sessionManager.getSessionId();
+    if (action === 'regenerate') {
+      if (!ctx.hasUI) throw new Error('Regeneration needs interactive Pi or an RPC client with confirmation dialogs.');
+      const before = await client.request('status');
+      const count = before.episodes.filter(item => item.included).length;
+      if (!count) { ctx.ui.notify('No included episodes to regenerate. Memorize an episode first.', 'info'); return; }
+      const model = JSON.parse(modelKey) as { provider: string; model: string; thinking: ThinkingLevel };
+      await show(ctx, 'Review full memory regeneration', [
+        `Character: ${character.name}`,
+        `Provider/model: ${model.provider}/${model.model}`,
+        `Thinking level: ${model.thinking}`,
+        `Regenerate all ${count} included episode${count === 1 ? '' : 's'} from their selected branches. Withdrawn episodes stay excluded.`,
+        'This makes new model calls, may incur provider costs, and can change existing recollections and impressions.',
+        'Reviewed recollections are preserved. A later correction may block regeneration if its earlier memory changes; corrections are never released automatically.',
+        'Cancel during work with /reverie cancel. Cancellation or failure retains the last published memory.',
+      ].join('\n\n'));
+      if (!await ctx.ui.confirm('Regenerate with current model?',
+        `${character.name}: all ${count} included episode${count === 1 ? '' : 's'}.\n${model.provider}/${model.model} · Thinking ${model.thinking}\nNew model calls may incur costs and change recollections/impressions. Proceed?`)) return;
+      // The confirmation approves this character and scope, using the captured route.
+      // A dialog can outlive a session switch or a change made by another window.
+      const binding = catalog!.binding(ctx.cwd);
+      if (working || !ctx.isIdle() || context?.sessionManager.getSessionId() !== episodeId
+        || binding?.characterId !== character.id || !binding.enabled
+        || (await client.request('status')).revision !== before.revision) {
+        throw new Error('The story or memory operation changed during the preview. Run /reverie regenerate again to review its current scope.');
+      }
+    }
     working = true; status(ctx);
     // Commands return immediately so Cancel remains usable while reflection calls the model.
     void (async () => {
       let saved = false;
       try {
-        const result = await client.request(action, { episodeId, modelKey, ...(action === 'rebuild' ? { force: false } : {}) }); saved = true;
-        ctx.ui.notify(result.status === 'current' ? 'Memory is already current.' : `Memory updated: ${result.includedEpisodes} included episodes.`, 'info');
-      } catch (error) { ctx.ui.notify(errorMessage(error), 'error'); }
+        const result = await client.request(action === 'regenerate' ? 'rebuild' : action,
+          { episodeId, modelKey, ...(['rebuild', 'regenerate'].includes(action) ? { force: action === 'regenerate' } : {}) }); saved = true;
+        ctx.ui.notify(result.status === 'current' ? 'Memory is already current.'
+          : `Memory ${action === 'regenerate' ? 'regenerated' : 'updated'}: ${result.includedEpisodes} included episodes.`, 'info');
+      } catch (error) {
+        const guidance = action === 'regenerate' && ['CORRECTION_DEPENDENCIES_CHANGED', 'CORRECTION_SOURCE_CHANGED'].includes(errorCode(error))
+          ? ' Last published memory is retained. Open /reverie memory browse to inspect corrected episodes and their sources. To allow regeneration, choose Release correction for the blocking episode and approve its invalidation preview, then run /reverie regenerate again. Releasing discards that reviewed correction; keep it if you want to preserve the reviewed wording.' : '';
+        ctx.ui.notify(errorMessage(error) + guidance, 'error');
+      }
       finally {
         working = false;
         try { if (context) await refresh(context); } catch (error) { ctx.ui.notify(errorMessage(error), 'error'); }
@@ -524,7 +556,7 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
     }
     if (action === 'menu') {
       const character = selected(ctx, false);
-      const choices = character ? ['Personality', 'Model for this folder', 'Story date', 'Episode chats', 'Memorize episode', 'Inspect memory', 'Explain last recall', 'Enable memory', 'Disable memory', 'Link character', 'Unlink character', 'Delete this chat', 'Rebuild memory', 'Cancel memory operation', 'Story backup', 'Keyboard shortcuts'] : ['Create/link character', 'Restore character backup', 'Keyboard shortcuts'];
+      const choices = character ? ['Personality', 'Model for this folder', 'Story date', 'Episode chats', 'Memorize episode', 'Inspect memory', 'Explain last recall', 'Enable memory', 'Disable memory', 'Link character', 'Unlink character', 'Delete this chat', 'Rebuild memory', 'Regenerate with current model', 'Cancel memory operation', 'Story backup', 'Keyboard shortcuts'] : ['Create/link character', 'Restore character backup', 'Keyboard shortcuts'];
       const choice = await ctx.ui.select('Reverie', choices);
       if (choice === 'Story backup') {
         const backupAction = await ctx.ui.select('Story backup', ['Export character story', 'Restore character backup']);
@@ -534,6 +566,7 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
       const actions: Record<string, string> = { 'Personality': 'persona', 'Story date': 'when', 'Memorize episode': 'memorize', 'Inspect memory': 'memory', 'Explain last recall': 'explain', 'Enable memory': 'on', 'Disable memory': 'off', 'Link character': 'link', 'Unlink character': 'unlink', 'Delete this chat': 'delete', 'Rebuild memory': 'rebuild', 'Cancel memory operation': 'cancel', 'Create/link character': 'setup', 'Keyboard shortcuts': 'keys' };
       actions['Model for this folder'] = 'model';
       actions['Episode chats'] = 'chats';
+      actions['Regenerate with current model'] = 'regenerate';
       if (choice) await command(choice === 'Inspect memory' ? 'memory browse' : actions[choice]!, ctx); return;
     }
     const character = selected(ctx)!;
@@ -578,7 +611,7 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
       await setDate(ctx, rest.length ? rest.join(' ') : undefined); return;
     }
     if (action === 'reroll' || action === 'previous' || action === 'next') { await navigate(ctx, action); return; }
-    if (action === 'memorize' || action === 'unmemorize' || action === 'rebuild') { await operate(ctx, action); return; }
+    if (action === 'memorize' || action === 'unmemorize' || action === 'rebuild' || action === 'regenerate') { await operate(ctx, action); return; }
     if (action === 'cancel') { await service!.client(character.id).request('cancel'); ctx.ui.notify('Cancellation requested. Last published memory is retained.', 'info'); return; }
     if (action === 'delete') {
       await deleteChat(ctx, character, ctx.sessionManager.getSessionId()); return;
