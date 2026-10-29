@@ -48,7 +48,11 @@ const report = { date: new Date().toISOString(), route, samplesPerCondition: 1,
 
 async function complete(system, messages, maxTokens) {
   const result = await runtime.completeSimple(model, { systemPrompt: system,
-    messages: messages.map(message => ({ ...message, timestamp: Date.now() })) }, {
+    messages: messages.map(message => ({ ...message, timestamp: Date.now(), ...(message.role === 'assistant' ? {
+      api: model.api, provider: model.provider, model: model.id, stopReason: 'stop',
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+    } : {}) })) }, {
     maxTokens, reasoning: route.thinking === 'off' ? undefined : route.thinking,
     signal: AbortSignal.timeout(180_000),
   });
@@ -65,7 +69,7 @@ for (const scenario of scenarios) {
   const current = { foundation, messages: scenario.played.map(([role, text], i) => ({ id: `played-${i + 1}`, role, text })) };
   const reflections = [];
   const client = new MemoryClient({ executable: nativeEnginePath(), database: join(directory, scenario.id + '.sqlite'),
-    characterId: scenario.id, settings: { topK: 1 }, readSource: async id => structuredClone(sources.get(id)),
+    characterId: scenario.id, settings: { topK: 1, reflectionAttempts: 1 }, readSource: async id => structuredClone(sources.get(id)),
     infer: async (request, { episodeId }) => {
       if (episodeId !== 'current') return JSON.stringify({ memories: [{
         gist: episodeId === 'old' ? scenario.old : 'We checked the harbor inventory together.', detail: '',
