@@ -10,6 +10,7 @@ import { registerReverie } from '../../.work/pi-test/extension.mjs';
 import { Catalog } from '../../.work/pi-test/catalog.mjs';
 import { MemoryClient } from '../../.work/pi-test/memory-client.mjs';
 import { alternatives, extractSource } from '../../.work/pi-test/source.mjs';
+import { recallHistory } from '../../.work/pi-test/recall-history.mjs';
 import { reflection } from '../fixtures/subjective.mjs';
 import { nativeEnginePath } from '../../scripts/lib/native-toolchain.mjs';
 
@@ -305,6 +306,58 @@ test('actual recollections are private system context, refreshed once per reques
   await f.command('off'); await f.session.prompt('Stay here with me.');
   assert.doesNotMatch(JSON.stringify(f.requests.at(-1).messages.filter(item => item.role === 'system')), /I remember The lighthouse|Private character memory/);
   assert.equal(f.errors.length, 0, JSON.stringify(f.errors));
+});
+
+test('Pi supplies bounded branch recall history, preserves first associations across restart and passes it separately to reflection', async t => {
+  const f = await fixture(t); await f.setup(); f.inputs.push('2000-01-01 The abandonment');
+  await f.session.prompt('I leave you by the lighthouse.'); await f.command('memorize');
+  await f.until(() => f.notices.some(item => item.message.startsWith('Memory updated:')));
+  await f.runtime.newSession(); f.inputs.push('2001-01-01 The return');
+  await f.session.prompt('I have to step outside.');
+  const episodeId = f.manager.getSessionId(), first = f.manager.getBranch().findLast(item => item.type === 'message' && item.message.role === 'assistant').id;
+  assert.doesNotMatch(JSON.stringify(f.requests.at(-1)), /Earlier supplied recollections/);
+  await f.session.prompt('I came back, as promised.');
+  const second = f.manager.getBranch().findLast(item => item.type === 'message' && item.message.role === 'assistant').id;
+  const context = f.requests.at(-1), system = context.messages.filter(item => item.role === 'system');
+  assert.equal(system.length, 1); assert.match(JSON.stringify(system), /Earlier supplied recollections/);
+  assert.match(JSON.stringify(system), new RegExp(first));
+  assert.doesNotMatch(JSON.stringify(context.messages.filter(item => item.role !== 'system')), /historical context|contributionHash/);
+  await f.command('explain'); assert.match(f.inspections.at(-1), /Current retrieval[\s\S]*Historical recall context/);
+  await f.command('reroll'); await f.until(() => alternatives(f.manager.getEntries(), f.manager.getBranch())?.replies.length === 2 && f.session.isIdle);
+  const rejected = f.manager.getBranch().findLast(item => item.type === 'message' && item.message.role === 'assistant').id;
+  await f.command('previous');
+  const catalog = new Catalog(f.home);
+  let history = recallHistory(catalog, f.manager.getBranch(), episodeId, catalog.characters()[0].id);
+  assert.deepEqual(history.map(item => item.replyId), [first, second]);
+  assert.ok(!history.some(item => item.replyId === rejected));
+  // Neither a failed reply nor its partial context can become established history.
+  f.controls.replyFailure = 'error'; await f.session.prompt('Will you stay?');
+  const failed = f.manager.getBranch().findLast(item => item.type === 'message' && item.message.role === 'assistant').id;
+  assert.equal(catalog.recall(failed, episodeId), undefined);
+  const beforeRetry = f.requests.length;
+  f.controls.replyFailure = undefined; await f.command('reroll'); await f.until(() => f.session.isIdle && f.requests.length > beforeRetry);
+  const selected = f.manager.getBranch().findLast(item => item.type === 'message' && item.message.role === 'assistant').id;
+  const path = f.manager.getSessionFile(); catalog.close(); await f.close();
+  const resumed = await fixture(t, { root: f.root, path });
+  await resumed.session.prompt('We are still here.');
+  const prompt = JSON.stringify(resumed.requests.at(-1).messages.filter(item => item.role === 'system'));
+  assert.match(prompt, new RegExp(first)); assert.match(prompt, new RegExp(selected));
+  assert.doesNotMatch(prompt, new RegExp(rejected)); assert.doesNotMatch(prompt, new RegExp(failed));
+  assert.equal((prompt.match(/Earlier supplied recollections/g) ?? []).length, 1);
+  await resumed.command('memorize'); await resumed.until(() => resumed.notices.some(item => item.message.startsWith('Memory updated:')));
+  const reflectionContext = resumed.requests.findLast(item => item.messages.some(message => message.role === 'user' && (() => {
+    try { return Boolean(JSON.parse(typeof message.content === 'string' ? message.content : message.content[0].text).episode); } catch { return false; }
+  })()));
+  const message = reflectionContext.messages.findLast(item => item.role === 'user');
+  const input = JSON.parse(typeof message.content === 'string' ? message.content : message.content[0].text);
+  assert.ok(input.recallHistory.length > 0 && input.recallHistory.length <= 8);
+  assert.match(input.recallHistory[0].firstSupplied.replyId, /^m\d+$/);
+  assert.match(input.recallHistory[0].replyId, /^m\d+$/);
+  assert.equal(input.episode.messages.filter(item => item.role === 'assistant').length, 4);
+  assert.ok(!input.episode.messages.some(item => /Earlier supplied recollections|contributionHash/.test(item.text)));
+  await resumed.command('off'); await resumed.session.prompt('Just listen.');
+  assert.doesNotMatch(JSON.stringify(resumed.requests.at(-1)), /Earlier supplied recollections|Private character memory/);
+  assert.equal(f.errors.length + resumed.errors.length, 0, JSON.stringify([...f.errors, ...resumed.errors]));
 });
 
 for (const stopReason of ['error', 'aborted']) {

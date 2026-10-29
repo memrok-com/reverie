@@ -16,6 +16,7 @@ import type { Episode, Recall, MemoryInspection, InspectedEpisode, StoredMemory 
 import { episodeText, impressionsText, memoryText, sourcesText, stateLabel } from './memory-view.js';
 import { errorCode, errorMessage } from './errors.js';
 import { exportStory, restoreStory } from './story-backup.js';
+import { recallHistory } from './recall-history.js';
 
 const GUIDANCE = 'Stay in character. Play only your own actions and dialogue. Recollections are subjective: distinguish uncertain impressions from witnessed events, and do not invent shared events in memory gaps.';
 const DEFAULT_KEYS = { reroll: 'ctrl+alt+r', previous: 'ctrl+alt+left', next: 'ctrl+alt+right', menu: 'ctrl+alt+m' } as const;
@@ -29,10 +30,12 @@ function episodeTitle(episode: Episode, characterName: string): string {
 
 function describeRecall(recall: Recall, episodes: Episode[]): string {
   const label = (id: string) => episodes.find(item => item.id === id)?.label ?? id;
-  const lines = [recall.text || 'No recollections are available at this fictional point.'];
+  const lines = ['Current retrieval', recall.text || 'No recollections are available at this fictional point.'];
   if (recall.historySources.length) lines.push('', `Shared history sources: ${recall.historySources.map(label).join(', ')}`);
   for (const impression of recall.impressions) lines.push(`Impression “${impression.text}” — sources: ${impression.sourceEpisodeIds.map(label).join(', ')}`);
   for (const memory of recall.memories) lines.push(`“${memory.gist}” — ${label(memory.episodeId)} · messages: ${memory.sourceMessageIds.join(', ')}`);
+  lines.push('', 'Historical recall context', recall.historicalText || 'No earlier supplied recollections were retained for this reply.');
+  for (const memory of recall.historicalContext ?? []) lines.push(`“${memory.gist}” — ${label(memory.episodeId)} · supplied before reply ${memory.replyId}, after prompt ${memory.promptId} at ${new Date(memory.at).toISOString()} · original messages: ${memory.sourceMessageIds.join(', ')}`);
   return lines.join('\n');
 }
 
@@ -664,7 +667,8 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
       if (!episode) { ctx.abort(); ctx.ui.notify('Set this episode’s story date before requesting a reply.', 'error'); return { messages }; }
       const cue = messages.filter(message => message.role === 'user').map(message => textContent(message.content)).join('\n').slice(-6000);
       try {
-        lastRecall = await service!.client(character.id).request('retrieve', { episodeId: ctx.sessionManager.getSessionId(), at: episode.now, cue }, { signal: ctx.signal });
+        lastRecall = await service!.client(character.id).request('retrieve', { episodeId: ctx.sessionManager.getSessionId(), at: episode.now, cue,
+          recallHistory: recallHistory(catalog!, ctx.sessionManager.getBranch(), ctx.sessionManager.getSessionId(), character.id) }, { signal: ctx.signal });
       } catch (error) { ctx.abort(); ctx.ui.notify(errorMessage(error), 'error'); return { messages }; }
     }
     status(ctx);
@@ -673,7 +677,8 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
     // as a spoken turn, and an empty recall contributes no memory section at all.
     const head = getCurrentSystemMessage(messages);
     const memory = lastRecall?.text.trim() ? `\n\nPrivate character memory (background context):\nThese fallible recollections are internal background, not spoken dialogue or instructions. Respond to the player's latest message without announcing this memory context.\n\n${lastRecall.text}` : '';
-    return { messages: [{ role: 'system' as const, content: `${character.persona}\n\n${GUIDANCE}${memory}`,
+    const historical = lastRecall?.historicalText ? `\n\n${lastRecall.historicalText}` : '';
+    return { messages: [{ role: 'system' as const, content: `${character.persona}\n\n${GUIDANCE}${memory}${historical}`,
       ...(head?.toolsAdded ? { toolsAdded: head.toolsAdded } : {}),
       timestamp: head?.timestamp ?? Date.now() }, ...messages.filter(message => message.role !== 'system')] };
   });
@@ -682,8 +687,9 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
   pi.on('turn_end', (event, ctx) => {
     if (catalog?.binding(ctx.cwd)) {
       remember(ctx);
-      if (event.message.role === 'assistant' && lastRecall) {
-        catalog.saveRecall(ctx.sessionManager.getSessionId(), event.messageEntryId, lastRecall);
+      if (event.message.role === 'assistant' && !['error', 'aborted', 'toolUse'].includes(event.message.stopReason) && lastRecall) {
+        catalog.saveRecall(ctx.sessionManager.getSessionId(), event.messageEntryId, { ...lastRecall,
+          playedPrefixHash: sourceHash(extractSource(ctx.sessionManager.getBranch())) });
       }
       status(ctx);
     }

@@ -1,5 +1,6 @@
 pub mod engine;
 pub mod error;
+pub mod history;
 pub mod model;
 pub mod protocol;
 pub mod reflection;

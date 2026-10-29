@@ -1,5 +1,7 @@
 use crate::error::{Error, Result, identifier};
-use crate::model::{Contribution, Episode, Impression, Memory, Settings, Source, SourceMessage};
+use crate::model::{
+    Contribution, Episode, HistoricalRecall, Impression, Memory, Settings, Source, SourceMessage,
+};
 use crate::time::iso;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -78,10 +80,20 @@ pub fn observe(value: Value) -> Result<Option<Source>> {
         messages: &messages,
         foundation: &foundation,
     })?;
+    let recall_history = value
+        .get("recallHistory")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|error| Error::new("INVALID_SOURCE", format!("Invalid recall history: {error}")))?
+        .unwrap_or_default();
+    let recall_hash = fingerprint(&recall_history)?;
     Ok(Some(Source {
         messages,
         foundation,
         hash,
+        recall_history,
+        recall_hash,
     }))
 }
 
@@ -283,6 +295,7 @@ pub fn request(
     source: &Source,
     prior: &[Contribution],
     settings: &Settings,
+    recall_history: &[HistoricalRecall],
 ) -> Result<Value> {
     let episode_ids: Vec<_> = prior
         .iter()
@@ -318,7 +331,7 @@ pub fn request(
         "text": impression.text,
         "sourceEpisodeIds": impression.source_episode_ids.iter().filter_map(|id| aliases.get(id.as_str())).collect::<Vec<_>>(),
     })).collect::<Vec<_>>()).unwrap_or_default();
-    Ok(json!({ "system": SYSTEM.trim_end(), "input": {
+    let mut request = json!({ "system": SYSTEM.trim_end(), "input": {
         "characterFoundation": source.foundation,
         "sourceRoleLegend": { "player": "human player and their character", "companion": "the character whose subjective memory this is" },
         "episode": { "id": aliases[episode.id.as_str()], "label": episode.label,
@@ -330,5 +343,40 @@ pub fn request(
         "eligibleEarlierEpisodes": earlier_episodes,
         "earlierRecollections": earlier.into_iter().map(|(_, value)| value).collect::<Vec<_>>(),
         "earlierImpressions": impressions,
-    }, "maxTokens": settings.reflection_max_tokens }))
+    }, "maxTokens": settings.reflection_max_tokens });
+    if !recall_history.is_empty() {
+        request["system"] = json!(format!(
+            "{}\n{}\nConnect recalled background only to reactions supported by current played messages. Do not copy old events into this episode's memories. Cite current message IDs for new recollections; original background message IDs are provenance, not current evidence.",
+            SYSTEM.trim_end(),
+            crate::history::GUIDANCE
+        ));
+        let messages: HashMap<_, _> = source
+            .messages
+            .iter()
+            .enumerate()
+            .map(|(i, message)| (message.id.as_str(), format!("m{}", i + 1)))
+            .collect();
+        request["input"]["recallHistory"] = json!(
+            recall_history
+                .iter()
+                .map(|item| {
+                    let mut value = serde_json::to_value(item).unwrap();
+                    value["replyId"] = json!(messages[item.reply_id.as_str()]);
+                    value["promptId"] = json!(messages[item.prompt_id.as_str()]);
+                    value["episodeId"] = json!(aliases[item.reference.episode_id.as_str()]);
+                    value["firstSupplied"]["replyId"] =
+                        json!(messages[item.first_supplied.reply_id.as_str()]);
+                    value["firstSupplied"]["promptId"] =
+                        json!(messages[item.first_supplied.prompt_id.as_str()]);
+                    value["originalSourceMessageIds"] = value
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("sourceMessageIds")
+                        .unwrap();
+                    value
+                })
+                .collect::<Vec<_>>()
+        );
+    }
+    Ok(request)
 }

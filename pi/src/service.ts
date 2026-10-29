@@ -2,7 +2,8 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { MemoryClient } from './memory-client.js';
 import { Catalog, type SourceRecord } from './catalog.js';
-import { readSourceFile } from './source.js';
+import { extractSource, readBranchFile } from './source.js';
+import { recallHistory } from './recall-history.js';
 import type { ReflectionRequest } from './contracts.js';
 
 export function executablePath(packageRoot: string): string {
@@ -41,7 +42,8 @@ export class MemoryService {
           signal.throwIfAborted();
           const source = this.catalog.source(id);
           if (!source || source.characterId !== characterId || source.deleted) throw new Error('That episode is no longer available to this character.');
-          return readSourceFile(source.path, source.leaf);
+          const branch = await readBranchFile(source.path, source.leaf);
+          return { ...extractSource(branch), recallHistory: recallHistory(this.catalog, branch, id, characterId) };
         }, infer: this.infer });
       this.clients.set(characterId, client);
     }

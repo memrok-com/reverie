@@ -16,6 +16,8 @@ Story backup checks cover selected alternatives and internal fork ancestry after
 
 The quality of remembered prose remains model-dependent. Retrieval uses lexical matching with reflected cue words, recency and emotional salience; there is no embedding model or inference call during retrieval. Reflection requires the full selected episode to fit the configured model context. Reflection can fail safely on invalid or overlong output.
 
+Recall-history tests compare identical played scenes with and without per-turn recall associations. They verify the shifted-topic context, original-source provenance, first/latest associations, current-message citations and absence of duplicate old events through deterministic reflection fixtures. Other checks cover recency/salience selection, strict Unicode budgets, uncertainty, branch alternatives, failed generations, restart, relocation through backup, source edits, fictional time, cross-character exclusion and invalidation after correction/withdrawal/deletion/rebuilding. These are context-contract comparisons, not measured prose-quality gains on live models. No reinforcement mechanism is enabled. See [comparison cases and limitations](recall-history-evaluation.md).
+
 Reply alternatives are branches. Only the selected history is memorized. Rejected branches remain in Pi's file until the whole chat is deleted. Branch changes after memorization require memorizing again. Later derivatives of a deleted episode are withheld until rebuilt; deletion never waits for a successful model call.
 
 The source is public under Apache-2.0. The npm package has not been published to the registry, and native executables are unsigned. Release bundles include Reverie's LICENSE and NOTICE together with third-party license notices.

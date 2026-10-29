@@ -9,7 +9,8 @@ import { unzipSync, zipSync } from 'fflate';
 import { Catalog } from '../../.work/pi-test/catalog.mjs';
 import { MemoryService } from '../../.work/pi-test/service.mjs';
 import { exportStory, restoreStory } from '../../.work/pi-test/story-backup.mjs';
-import { extractSource, readSourceFile } from '../../.work/pi-test/source.mjs';
+import { extractSource, readBranchFile, readSourceFile, sourceHash } from '../../.work/pi-test/source.mjs';
+import { recallHistory } from '../../.work/pi-test/recall-history.mjs';
 import { nativeEnginePath } from '../../scripts/lib/native-toolchain.mjs';
 import { reflection } from '../fixtures/subjective.mjs';
 
@@ -52,7 +53,8 @@ async function fixture(t) {
   await client.request('memorize', { episodeId: withdrawn }); await client.request('unmemorize', { episodeId: withdrawn });
   const later = await episode('The reunion', '2030-01-01', 'bare'); await client.request('memorize', { episodeId: later });
   const recall = await client.request('retrieve', { episodeId: later, at: '2030-01-01', cue: 'lantern' });
-  catalog.saveRecall(later, managers.at(-1).getBranch().findLast(entry => entry.type === 'message').id, recall);
+  catalog.saveRecall(later, managers.at(-1).getBranch().findLast(entry => entry.type === 'message').id,
+    { ...recall, playedPrefixHash: sourceHash(extractSource(managers.at(-1).getBranch())) });
   catalog.bind(cwd, character.id, false);
   const archive = join(root, 'story.zip');
   return { root, cwd, catalog, character, service, client, first, withdrawn, later, managers, archive, close };
@@ -99,6 +101,10 @@ test('story ZIP round trip relocates Pi source, preserves selected branches, cor
   assert.equal(resumed.getHeader().parentSession, d.catalog.source(f.first).path);
   assert.equal(resumed.getSessionId(), f.later); assert.equal(resumed.getCwd(), d.cwd);
   assert.ok(d.catalog.recall(resumed.getBranch().findLast(entry => entry.type === 'message').id));
+  const historical = recallHistory(d.catalog, await readBranchFile(source.path, source.leaf), f.later, restored.id);
+  assert.equal(historical.length, 1);
+  const recalledAfterRestore = await d.service.client(restored.id).request('retrieve', { episodeId: f.later, at: '2030-01-01', recallHistory: historical });
+  assert.equal(recalledAfterRestore.historicalContext[0].episodeId, f.first);
   const rebuilt = await d.service.client(restored.id).request('rebuild', { force: true });
   assert.equal(rebuilt.reflected, 2);
   assert.equal((await d.service.client(restored.id).request('status')).episodes.find(episode => episode.id === f.withdrawn).included, false);

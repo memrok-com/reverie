@@ -81,7 +81,11 @@ export class Catalog {
   saveRecall(episodeId: string, replyId: string, data: unknown): void {
     this.db.prepare('INSERT INTO recalls VALUES(?,?,?) ON CONFLICT(replyId) DO UPDATE SET data=excluded.data').run(episodeId, replyId, JSON.stringify(data));
   }
-  recall(replyId: string): unknown { const row = this.db.prepare('SELECT data FROM recalls WHERE replyId=?').get(replyId); return row ? JSON.parse(String(row.data)) : undefined; }
+  recall(replyId: string, episodeId?: string): unknown {
+    const row = episodeId === undefined ? this.db.prepare('SELECT data FROM recalls WHERE replyId=?').get(replyId)
+      : this.db.prepare('SELECT data FROM recalls WHERE replyId=? AND episodeId=?').get(replyId, episodeId);
+    return row ? JSON.parse(String(row.data)) : undefined;
+  }
   preference(key: string, fallback: string): string { return String(this.db.prepare('SELECT value FROM preferences WHERE key=?').get(key)?.value ?? fallback); }
   setPreference(key: string, value: string): void { this.db.prepare('INSERT INTO preferences VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, value); }
   async missingSources(onUnavailable: (source: SourceRecord, error: unknown) => void = () => {}): Promise<SourceRecord[]> {

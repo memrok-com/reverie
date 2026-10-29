@@ -818,14 +818,24 @@ impl Reverie {
                     "Earlier memory changed beneath a corrected episode. Inspect and release that episode's correction before rebuilding.",
                 ));
             }
-            let input_hash = fingerprint(
-                &json!({"reflectionVersion":reflection::REFLECTION_VERSION, "modelKey":model_key, "source":source.hash,
-                "start":episode.start, "end":episode.now, "label":episode.label, "prefix":prefix, "settings":self.settings}),
+            let recall_history = crate::history::select(
+                &source.recall_history,
+                episode,
+                episode.now,
+                &staged,
+                &self.settings,
+                Some(source),
             )?;
-            let reuse_hash = fingerprint(
-                &json!({"reflectionVersion":reflection::REFLECTION_VERSION, "source":source.hash,
-                "start":episode.start, "end":episode.now, "label":episode.label, "prefix":prefix, "settings":self.settings}),
-            )?;
+            let mut inputs = json!({"reflectionVersion":reflection::REFLECTION_VERSION, "modelKey":model_key, "source":source.hash,
+                "start":episode.start, "end":episode.now, "label":episode.label, "prefix":prefix, "settings":self.settings});
+            // Empty history preserves the existing input contract and correction prefixes.
+            if !recall_history.is_empty() {
+                inputs["recallHistoryVersion"] = json!(1);
+                inputs["recallHistory"] = json!(recall_history);
+            }
+            let input_hash = fingerprint(&inputs)?;
+            inputs.as_object_mut().unwrap().remove("modelKey");
+            let reuse_hash = fingerprint(&inputs)?;
             let contribution = if !force
                 && old.get(&episode.id).is_some_and(|item| {
                     item.reuse_hash
@@ -848,7 +858,8 @@ impl Reverie {
                     staged.len(),
                     observations.len(),
                 );
-                let mut request = reflection::request(episode, source, &staged, &self.settings)?;
+                let mut request =
+                    reflection::request(episode, source, &staged, &self.settings, &recall_history)?;
                 let correction = corrections
                     .iter()
                     .find(|item| item.episode_id == episode.id);
@@ -933,7 +944,7 @@ impl Reverie {
         for episode in &selected {
             let current = self.read_source(&episode.id, cancel)?;
             let same = match (observations.get(&episode.id), current.as_ref()) {
-                (Some(a), Some(b)) => a.hash == b.hash,
+                (Some(a), Some(b)) => a.hash == b.hash && a.recall_hash == b.recall_hash,
                 (None, None) => true,
                 _ => false,
             };
@@ -1002,10 +1013,63 @@ impl Reverie {
             self.settings.candidate_limit,
         )?;
         let history = store.history(&self.character_id, now, episode_id)?;
+        let contributions = store.contributions(&self.character_id)?;
+        let activations: Vec<crate::model::RecallActivation> = params
+            .get("recallHistory")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|error| {
+                Error::new("INVALID_INPUT", format!("Invalid recall history: {error}"))
+            })?
+            .unwrap_or_default();
+        let historical_context = match store.episode(&self.character_id, episode_id)? {
+            Some(episode) => {
+                let episodes = store.episodes(&self.character_id)?;
+                let eligible: Vec<_> = contributions
+                    .iter()
+                    .filter(|item| {
+                        episodes
+                            .iter()
+                            .any(|other| other.id == item.episode_id && other.start < episode.start)
+                    })
+                    .cloned()
+                    .collect();
+                crate::history::select(
+                    &activations,
+                    &episode,
+                    now.min(episode.now),
+                    &eligible,
+                    &self.settings,
+                    None,
+                )?
+            }
+            None => Vec::new(),
+        };
+        let historical_text = if historical_context.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "{}\n{}",
+                crate::history::GUIDANCE,
+                serde_json::to_string(&historical_context)?
+            )
+        };
         let mut ranked: Vec<_> = candidates
             .into_iter()
-            .map(|row| {
+            .filter_map(|row| {
                 let memory = row.memory;
+                let contribution = contributions
+                    .iter()
+                    .find(|item| item.episode_id == row.episode_id)?;
+                let memory_index = contribution.memories.iter().position(|item| {
+                    item.gist == memory.gist
+                        && item.detail == memory.detail
+                        && item.feeling == memory.feeling
+                        && item.source_message_ids == memory.source_message_ids
+                        && item.salience == memory.salience
+                        && item.confidence == memory.confidence
+                })?;
                 let age_days = (now - row.available_at).max(0) as f64 / DAY as f64;
                 let retention = (-std::f64::consts::LN_2 * age_days
                     / (self.settings.detail_half_life_days * (1.0 + 4.0 * memory.salience)))
@@ -1015,9 +1079,11 @@ impl Reverie {
                 } else {
                     0.0
                 };
-                Recollection {
+                Some(Recollection {
                     id: row.id,
                     episode_id: row.episode_id,
+                    contribution_hash: contribution.state_hash.clone(),
+                    memory_index,
                     gist: memory.gist,
                     detail: if retention >= self.settings.detail_threshold {
                         memory.detail
@@ -1031,7 +1097,7 @@ impl Reverie {
                     detail_retention: retention,
                     score: matched * 3.0 + memory.salience + 0.3 / (1.0 + age_days / 365.2425),
                     source_message_ids: memory.source_message_ids,
-                }
+                })
             })
             .collect();
         ranked.sort_by(|a, b| b.score.total_cmp(&a.score).then(a.id.cmp(&b.id)));
@@ -1093,6 +1159,8 @@ impl Reverie {
             episode_id: episode_id.into(),
             at: now,
             memories,
+            historical_context,
+            historical_text,
             impressions,
             shared_history,
             history_sources: history.history_sources,

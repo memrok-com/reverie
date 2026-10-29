@@ -77,6 +77,51 @@ pub struct Source {
     pub messages: Vec<SourceMessage>,
     pub foundation: String,
     pub hash: String,
+    pub recall_history: Vec<RecallActivation>,
+    pub recall_hash: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecallReference {
+    pub episode_id: String,
+    pub contribution_hash: String,
+    pub memory_index: usize,
+    pub detail_supplied: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecallActivation {
+    pub reply_id: String,
+    pub prompt_id: String,
+    pub at: i64,
+    pub memories: Vec<RecallReference>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecallAssociation {
+    pub reply_id: String,
+    pub prompt_id: String,
+    pub at: i64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoricalRecall {
+    #[serde(flatten)]
+    pub reference: RecallReference,
+    pub reply_id: String,
+    pub prompt_id: String,
+    pub at: i64,
+    pub first_supplied: RecallAssociation,
+    pub gist: String,
+    pub detail: String,
+    pub feeling: String,
+    pub confidence: f64,
+    pub salience: f64,
+    pub source_message_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -158,6 +203,8 @@ impl Settings {
 pub struct Recollection {
     pub id: i64,
     pub episode_id: String,
+    pub contribution_hash: String,
+    pub memory_index: usize,
     pub gist: String,
     pub detail: String,
     pub feeling: String,
@@ -176,6 +223,8 @@ pub struct Recall {
     pub episode_id: String,
     pub at: i64,
     pub memories: Vec<Recollection>,
+    pub historical_context: Vec<HistoricalRecall>,
+    pub historical_text: String,
     pub impressions: Vec<Impression>,
     pub shared_history: String,
     pub history_sources: Vec<String>,
