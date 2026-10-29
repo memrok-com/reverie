@@ -43,8 +43,11 @@ export function extractSource(branch: Entry[]): SourceObservation {
   return { foundation, messages };
 }
 export async function readSourceFile(path: string, leaf: string | null): Promise<SourceObservation> {
+  return extractSource(await readBranchFile(path, leaf));
+}
+export async function readBranchFile(path: string, leaf: string | null): Promise<Entry[]> {
   const rows = (await readFile(path, 'utf8')).split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line));
-  return extractSource(branchOf(rows.filter(row => row.type !== 'session'), leaf));
+  return branchOf(rows.filter(row => row.type !== 'session'), leaf);
 }
 export function sourceHash(source: SourceObservation): string {
   return createHash('sha256').update(JSON.stringify({ messages: source.messages, foundation: source.foundation })).digest('hex');

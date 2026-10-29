@@ -9,17 +9,22 @@ import { unzipSync, zipSync } from 'fflate';
 import { Catalog } from '../../.work/pi-test/catalog.mjs';
 import { MemoryService } from '../../.work/pi-test/service.mjs';
 import { exportStory, restoreStory } from '../../.work/pi-test/story-backup.mjs';
-import { extractSource, readSourceFile } from '../../.work/pi-test/source.mjs';
+import { extractSource, readBranchFile, readSourceFile, sourceHash } from '../../.work/pi-test/source.mjs';
+import { recallHistory } from '../../.work/pi-test/recall-history.mjs';
 import { nativeEnginePath } from '../../scripts/lib/native-toolchain.mjs';
 import { reflection } from '../fixtures/subjective.mjs';
 
 const executable = nativeEnginePath(), hash = bytes => createHash('sha256').update(bytes).digest('hex');
-async function fixture(t) {
+async function fixture(t, { duplicateMemories = false } = {}) {
   const root = resolve('.work/backup-tests', randomUUID()), cwd = join(root, 'original-folder');
   await mkdir(cwd, { recursive: true });
   const catalog = new Catalog(join(root, 'original-data')), character = catalog.create('Mara', 'You are Mara, proud and wary.');
   catalog.bind(cwd, character.id); catalog.setFolderModel(cwd, { provider: 'unavailable', modelId: 'local-roleplay', thinkingLevel: 'high' });
-  const service = new MemoryService(catalog, executable, async request => JSON.stringify(reflection(request)));
+  const service = new MemoryService(catalog, executable, async request => {
+    const result = reflection(request);
+    if (duplicateMemories) result.memories = [{ ...result.memories[0], cues: ['alpha'] }, { ...result.memories[0], cues: ['beta'] }];
+    return JSON.stringify(result);
+  });
   const client = service.client(character.id), managers = [];
   let closed = false;
   const close = async () => { if (!closed) { closed = true; await service.close(); catalog.close(); } };
@@ -52,7 +57,8 @@ async function fixture(t) {
   await client.request('memorize', { episodeId: withdrawn }); await client.request('unmemorize', { episodeId: withdrawn });
   const later = await episode('The reunion', '2030-01-01', 'bare'); await client.request('memorize', { episodeId: later });
   const recall = await client.request('retrieve', { episodeId: later, at: '2030-01-01', cue: 'lantern' });
-  catalog.saveRecall(later, managers.at(-1).getBranch().findLast(entry => entry.type === 'message').id, recall);
+  catalog.saveRecall(later, managers.at(-1).getBranch().findLast(entry => entry.type === 'message').id,
+    { ...recall, playedPrefixHash: sourceHash(extractSource(managers.at(-1).getBranch())) });
   catalog.bind(cwd, character.id, false);
   const archive = join(root, 'story.zip');
   return { root, cwd, catalog, character, service, client, first, withdrawn, later, managers, archive, close };
@@ -99,6 +105,10 @@ test('story ZIP round trip relocates Pi source, preserves selected branches, cor
   assert.equal(resumed.getHeader().parentSession, d.catalog.source(f.first).path);
   assert.equal(resumed.getSessionId(), f.later); assert.equal(resumed.getCwd(), d.cwd);
   assert.ok(d.catalog.recall(resumed.getBranch().findLast(entry => entry.type === 'message').id));
+  const historical = recallHistory(d.catalog, await readBranchFile(source.path, source.leaf), f.later, restored.id);
+  assert.equal(historical.length, 1);
+  const recalledAfterRestore = await d.service.client(restored.id).request('retrieve', { episodeId: f.later, at: '2030-01-01', recallHistory: historical });
+  assert.equal(recalledAfterRestore.historicalContext[0].episodeId, f.first);
   const rebuilt = await d.service.client(restored.id).request('rebuild', { force: true });
   assert.equal(rebuilt.reflected, 2);
   assert.equal((await d.service.client(restored.id).request('status')).episodes.find(episode => episode.id === f.withdrawn).included, false);
@@ -108,6 +118,21 @@ test('story ZIP round trip relocates Pi source, preserves selected branches, cor
   try { assert.equal(checked.character(restored.id).name, 'Mara'); await readFile(source.path); }
   finally { checked.close(); }
   await assert.rejects(readFile(marker), { code: 'ENOENT' });
+});
+
+test('restore preserves duplicate-prose memory indices when archived rows are reordered', async t => {
+  const f = await fixture(t, { duplicateMemories: true });
+  const before = await f.client.request('retrieve', { at: '2040-01-01', cue: 'beta' });
+  assert.equal(before.memories.find(memory => memory.episodeId === f.later).memoryIndex, 1);
+  await exportStory(f.catalog, f.character.id, f.archive, f.cwd);
+  const files = unzipSync(await readFile(f.archive)), story = JSON.parse(Buffer.from(files['story.json']).toString());
+  story.native.memories.reverse();
+  files['story.json'] = Buffer.from(JSON.stringify(story));
+  files['checksums.json'] = Buffer.from(JSON.stringify({ storySha256: hash(files['story.json']) }));
+  const reordered = join(f.root, 'reordered.zip'); await writeFile(reordered, zipSync(files));
+  const d = await destination(t, f.root); await restoreStory(d.catalog, reordered, d.cwd, executable);
+  const after = await d.service.client(f.character.id).request('retrieve', { at: '2040-01-01', cue: 'beta' });
+  assert.deepEqual(after.memories.map(({ id, ...memory }) => memory), before.memories.map(({ id, ...memory }) => memory));
 });
 
 test('backup includes an active unplayed Pi setup without creating a live transcript file', async t => {

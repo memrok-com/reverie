@@ -30,7 +30,7 @@ function attach(catalog: Catalog): void {
   }
 }
 function rows(catalog: Catalog, table: typeof tables[number], character: string): Row[] {
-  return catalog.db.prepare(`SELECT * FROM story_memory.${table} WHERE character_id=?`).all(character) as Row[];
+  return catalog.db.prepare(`SELECT * FROM story_memory.${table} WHERE character_id=?${table === 'memories' ? ' ORDER BY id' : ''}`).all(character) as Row[];
 }
 function sourceRows(bytes: Uint8Array, id: string, character: string, leaf: string | null): Record<string, unknown>[] {
   const parsed: unknown[] = new TextDecoder('utf-8', { fatal: true }).decode(bytes).split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line));
@@ -166,7 +166,17 @@ function insertNative(db: DatabaseSync, prefix: string, story: Story): void {
   db.prepare(`INSERT INTO ${prefix}characters(id,revision) VALUES(?,?)`).run(story.character.id, story.native.revision);
   for (const table of tables) {
     const fields = columns[table], insert = db.prepare(`INSERT INTO ${prefix}${table}(${fields.join(',')}) VALUES(${fields.map(() => '?').join(',')})`);
-    for (const row of story.native[table]) {
+    let rows = story.native[table];
+    if (table === 'memories') {
+      const ids = rows.map(row => row.id);
+      if (!ids.every(id => typeof id === 'number' && Number.isSafeInteger(id) && id > 0) || new Set(ids).size !== ids.length) {
+        throw new Error('Invalid archived memory row identities.');
+      }
+      // Imported row IDs are allocated anew. Preserve the original per-episode
+      // ordinal even if an archive's memory array arrives in a different order.
+      rows = [...rows].sort((a, b) => Number(a.id) - Number(b.id));
+    }
+    for (const row of rows) {
       if (!fields.every(field => row[field] === null || typeof row[field] === 'string' || (typeof row[field] === 'number' && Number.isFinite(row[field])))) throw new Error(`Invalid ${table} data in this backup.`);
       insert.run(...fields.map(field => row[field]!));
     }

@@ -21,6 +21,7 @@
         FOREIGN KEY(character_id,episode_id) REFERENCES episodes(character_id,id) ON DELETE CASCADE
       );
       CREATE INDEX IF NOT EXISTS memories_time ON memories(character_id,available_at);
+      CREATE INDEX IF NOT EXISTS memories_episode_order ON memories(character_id,episode_id,id);
       CREATE VIRTUAL TABLE IF NOT EXISTS memory_search USING fts5(gist,detail,feeling,cues, content='memories',content_rowid='id',tokenize='porter unicode61');
       CREATE TRIGGER IF NOT EXISTS memories_insert AFTER INSERT ON memories BEGIN
         INSERT INTO memory_search(rowid,gist,detail,feeling,cues) VALUES(new.id,new.gist,new.detail,new.feeling,new.cues);

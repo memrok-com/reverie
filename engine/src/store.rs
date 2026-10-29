@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use crate::model::{Contribution, Correction, Episode, Impression, Memory};
+use crate::model::{Contribution, Correction, Episode, Impression};
 use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
 use std::{collections::HashSet, path::Path};
 
@@ -10,13 +10,14 @@ pub struct MemoryStore {
 pub struct Candidate {
     pub id: i64,
     pub episode_id: String,
+    pub memory_index: usize,
     pub available_at: i64,
-    pub memory: Memory,
     pub rank: f64,
 }
 
 pub struct History {
     pub impressions: Vec<Impression>,
+    pub impression_episode_id: Option<String>,
     pub first: Option<i64>,
     pub history_sources: Vec<String>,
 }
@@ -35,23 +36,11 @@ fn episode_row(row: &Row<'_>) -> rusqlite::Result<Episode> {
 }
 
 fn candidate_row(row: &Row<'_>) -> rusqlite::Result<Candidate> {
-    let sources: String = row.get("source_ids")?;
-    let source_message_ids = serde_json::from_str(&sources).map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(10, rusqlite::types::Type::Text, Box::new(error))
-    })?;
     Ok(Candidate {
         id: row.get("id")?,
         episode_id: row.get("episode_id")?,
+        memory_index: row.get::<_, i64>("memory_index")? as usize,
         available_at: row.get("available_at")?,
-        memory: Memory {
-            gist: row.get("gist")?,
-            detail: row.get("detail")?,
-            feeling: row.get("feeling")?,
-            cues: Vec::new(),
-            salience: row.get("salience")?,
-            confidence: row.get("confidence")?,
-            source_message_ids,
-        },
         rank: row.get("rank")?,
     })
 }
@@ -234,11 +223,30 @@ impl MemoryStore {
 
     /// Remove source and every later derivative that could have learned from it.
     /// Inclusion choices for surviving episodes remain available for an explicit rebuild.
-    pub fn forget_episode(&mut self, character: &str, episode: &str) -> Result<usize> {
+    pub fn forget_episode(
+        &mut self,
+        character: &str,
+        episode: &str,
+        revision: Option<i64>,
+    ) -> Result<usize> {
         self.assert_episode_owner(character, episode)?;
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current = tx
+            .query_row(
+                "SELECT revision FROM characters WHERE id=?",
+                [character],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .unwrap_or(0);
+        if revision.is_some_and(|revision| revision != current) {
+            return Err(Error::new(
+                "STALE_OPERATION",
+                "Memory changed while preparing deletion. Retry source reconciliation.",
+            ));
+        }
         let start: Option<i64> = tx
             .query_row(
                 "SELECT start FROM episodes WHERE character_id=? AND id=?",
@@ -392,7 +400,10 @@ impl MemoryStore {
             .map(|episode| episode.start);
         let mut rows = Vec::new();
         if !query.is_empty() {
-            rows = self.db.prepare_cached("SELECT m.*,memory_search.rank AS rank FROM memory_search
+            // Publication inserts each episode's complete memory vector in order.
+            // Its row ordinal survives restarts and backup without float matching.
+            rows = self.db.prepare_cached("SELECT m.*,memory_search.rank AS rank,
+                (SELECT COUNT(*) FROM memories earlier WHERE earlier.character_id=m.character_id AND earlier.episode_id=m.episode_id AND earlier.id<m.id) AS memory_index FROM memory_search
                 CROSS JOIN memories m ON m.id=memory_search.rowid WHERE memory_search MATCH ?1
                 AND m.character_id=?2 AND m.available_at<=?3 AND m.episode_id<>?4
                 AND (?5 IS NULL OR EXISTS(SELECT 1 FROM episodes e WHERE e.character_id=m.character_id AND e.id=m.episode_id AND e.start<?5))
@@ -400,7 +411,8 @@ impl MemoryStore {
                 .query_map(params![query, character, now, active, active_start, limit as i64], candidate_row)?
                 .collect::<std::result::Result<Vec<_>, _>>()?;
         }
-        let fallback = self.db.prepare_cached("SELECT m.*,0 AS rank FROM memories m WHERE m.character_id=?1 AND m.available_at<=?2 AND m.episode_id<>?3
+        let fallback = self.db.prepare_cached("SELECT m.*,0 AS rank,
+            (SELECT COUNT(*) FROM memories earlier WHERE earlier.character_id=m.character_id AND earlier.episode_id=m.episode_id AND earlier.id<m.id) AS memory_index FROM memories m WHERE m.character_id=?1 AND m.available_at<=?2 AND m.episode_id<>?3
             AND (?4 IS NULL OR EXISTS(SELECT 1 FROM episodes e WHERE e.character_id=m.character_id AND e.id=m.episode_id AND e.start<?4))
             ORDER BY salience DESC,available_at DESC LIMIT ?5")?
             .query_map(params![character, now, active, active_start, limit.min(12) as i64], candidate_row)?
@@ -423,13 +435,16 @@ impl MemoryStore {
             AND (?4 IS NULL OR EXISTS(SELECT 1 FROM episodes e WHERE e.character_id=c.character_id AND e.id=c.episode_id AND e.start<?4))
             ORDER BY c.start,c.episode_id LIMIT 1")?
             .query_row(params![character, now, active, active_start], |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
-        let impressions = snapshot
+        let snapshot = snapshot
             .map(|text| serde_json::from_str::<Contribution>(&text))
-            .transpose()?
-            .map(|item| item.impressions)
-            .unwrap_or_default();
+            .transpose()?;
+        // Impression citations identify supporting events, which need not include
+        // the episode that authored this complete snapshot.
+        let impression_episode_id = snapshot.as_ref().map(|item| item.episode_id.clone());
+        let impressions = snapshot.map(|item| item.impressions).unwrap_or_default();
         Ok(History {
             impressions,
+            impression_episode_id,
             first: first.as_ref().map(|(start, _)| *start),
             history_sources: first.map(|(_, id)| vec![id]).unwrap_or_default(),
         })

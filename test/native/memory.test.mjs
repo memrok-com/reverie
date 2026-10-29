@@ -515,6 +515,186 @@ test('legacy contributions with an unknown original model are conservatively ref
   assert.equal(f.contributions()[0].modelKey, 'new');
 });
 
+function activation(recall, promptId, replyId, at = recall.at) {
+  return { promptId, replyId, at, memories: recall.memories.map(memory => ({ episodeId: memory.episodeId,
+    contributionHash: memory.contributionHash, memoryIndex: memory.memoryIndex, detailSupplied: Boolean(memory.detail) })) };
+}
+
+test('bounded earlier activation survives shifted retrieval and connects background to current reactions in reflection', async t => {
+  const f = fixture(t, { settings: { topK: 1 }, infer: request => {
+    const result = reflection(request), episode = request.input.episode;
+    if (episode.label === 'abandonment') Object.assign(result.memories[0], { gist: 'I feared being abandoned.', cues: ['departure'], salience: 0.7 });
+    if (episode.label === 'harbor') Object.assign(result.memories[0], { gist: 'We trade at the harbor.', cues: ['harbor'], salience: 0.8 });
+    if (episode.label === 'return') Object.assign(result.memories[0], {
+      gist: request.input.recallHistory?.length ? 'Your departure stirred my old fear, but your return reassured me.' : 'You left and returned; I felt relief.',
+      sourceMessageIds: ['m2', 'm4'],
+    });
+    return result;
+  } });
+  await f.episode('abandonment', '2000-01-01'); await f.request('memorize', { episodeId: 'abandonment' });
+  await f.episode('harbor', '2001-01-01'); await f.request('memorize', { episodeId: 'harbor' });
+  await f.episode('return', '2002-01-01');
+  const source = f.sources.get('return');
+  source.messages = [{ id: 'leave', role: 'user', text: 'I need to leave for a moment.' },
+    { id: 'fear', role: 'assistant', text: 'I am afraid you will not come back.' },
+    { id: 'arrive', role: 'user', text: 'I am back from the harbor.' },
+    { id: 'relief', role: 'assistant', text: 'You came back. I feel reassured.' }];
+  const first = await f.request('retrieve', { episodeId: 'return', at: '2002-01-01', cue: 'departure' });
+  assert.equal(first.memories[0].episodeId, 'abandonment');
+  source.recallHistory = [activation(first, 'leave', 'fear')];
+  const next = await f.request('retrieve', { episodeId: 'return', at: '2002-01-01', cue: 'harbor', recallHistory: source.recallHistory });
+  assert.equal(next.memories[0].episodeId, 'harbor');
+  assert.doesNotMatch(next.text, /feared being abandoned/);
+  assert.match(next.historicalText, /feared being abandoned/);
+  assert.equal(next.historicalContext[0].replyId, 'fear');
+  assert.match(next.historicalText, /not evidence of a conscious thought/);
+  await f.request('memorize', { episodeId: 'return' });
+  const request = f.calls.at(-1).request, history = request.input.recallHistory[0];
+  assert.equal(history.promptId, 'm1'); assert.equal(history.replyId, 'm2'); assert.equal(history.episodeId, 'e1');
+  assert.equal(history.recollectionId, 'e1.r1');
+  for (const key of ['originalSourceMessageIds', 'sourceMessageIds', 'contributionHash', 'memoryIndex', 'detailSupplied']) assert.equal(key in history, false);
+  assert.ok(!JSON.stringify(history).includes('abandonment:user'));
+  assert.match(request.system, /Do not copy old events/);
+  assert.deepEqual(f.contributions().at(-1).memories[0].sourceMessageIds, ['fear', 'relief']);
+  assert.equal(f.contributions().at(-1).memories.length, 1);
+  assert.match(f.contributions().at(-1).memories[0].gist, /old fear/);
+  // Focused baseline comparison removes only recall associations, keeping played source identical.
+  const sourceHash = f.contributions().at(-1).sourceHash;
+  source.recallHistory = [];
+  assert.equal((await f.request('memorize', { episodeId: 'return' })).reflected, 1);
+  assert.equal(f.contributions().at(-1).sourceHash, sourceHash);
+  assert.equal(f.calls.at(-1).request.input.recallHistory, undefined);
+  assert.equal(f.contributions().at(-1).memories[0].gist, 'You left and returned; I felt relief.');
+  assert.equal((await f.request('memorize', { episodeId: 'return' })).status, 'current');
+});
+
+test('candidate references distinguish duplicate prose by stored episode order across restart and republication', async t => {
+  const f = fixture(t, { settings: { topK: 1 }, infer: request => {
+    const result = reflection(request), memory = { ...result.memories[0], confidence: 0.12345678901234568, salience: 0.6123456789012346 };
+    result.memories = [{ ...memory, cues: ['alpha'] }, { ...memory, cues: ['beta'] }]; return result;
+  } });
+  await f.episode('old', '2000-01-01'); await f.request('memorize', { episodeId: 'old' });
+  await f.episode('current', '2010-01-01');
+  for (const phase of ['initial', 'restart', 'republication']) {
+    if (phase === 'restart') await f.restart();
+    if (phase === 'republication') await f.request('rebuild', { force: true });
+    for (const [cue, index] of [['alpha', 0], ['beta', 1]]) {
+      const recall = await f.request('retrieve', { episodeId: 'current', at: '2010-01-01', cue });
+      assert.equal(recall.memories.length, 1);
+      assert.equal(recall.memories[0].memoryIndex, index, phase + ': ' + cue);
+      assert.equal(recall.memories[0].contributionHash, f.contributions()[0].stateHash);
+    }
+  }
+});
+
+test('history selection balances recency and salience within eight distinct items and a strict serialized budget without reinforcement', async t => {
+  const f = fixture(t, { settings: { topK: 32 }, infer: request => {
+    const result = reflection(request); result.memories[0].salience = request.input.episode.label === 'old-0' ? 1 : 0.2; return result;
+  } });
+  for (let i = 0; i < 12; i++) {
+    await f.episode(`old-${i}`, `${2000 + i}-01-01`); await f.request('memorize', { episodeId: `old-${i}` });
+  }
+  await f.episode('current', '2020-01-01');
+  const fresh = await f.request('retrieve', { episodeId: 'current', at: '2020-01-01' });
+  const history = fresh.memories.map((memory, i) => activation({ ...fresh, memories: [memory] }, `u${i}`, `a${i}`));
+  // An early emotional association remains eligible alongside the newest four.
+  const before = f.contributions();
+  const result = await f.request('retrieve', { episodeId: 'current', at: '2020-01-01', recallHistory: history });
+  assert.ok(result.historicalContext.length > 4 && result.historicalContext.length <= 8);
+  assert.ok(JSON.stringify(result.historicalContext).length <= 6000);
+  for (const item of history.slice(-4)) assert.ok(result.historicalContext.some(memory => memory.replyId === item.replyId));
+  assert.ok(result.historicalContext.some(memory => memory.episodeId === 'old-0'));
+  const repeated = await f.request('retrieve', { episodeId: 'current', at: '2020-01-01', recallHistory: [...history, ...history, ...history] });
+  assert.equal(new Set(repeated.historicalContext.map(item => item.episodeId + item.memoryIndex)).size, repeated.historicalContext.length);
+  assert.deepEqual(repeated.memories, result.memories);
+  assert.deepEqual(f.contributions(), before);
+  assert.deepEqual((await f.request('retrieve', { episodeId: 'current', at: '2020-01-01', recallHistory: history })).historicalContext, result.historicalContext);
+});
+
+test('large Unicode recollections obey the history budget and repeated supply retains uncertainty and first/last associations', async t => {
+  const f = fixture(t, { settings: { topK: 32, memoryBudget: 50000 }, infer: request => {
+    const result = reflection(request);
+    Object.assign(result.memories[0], { gist: 'I suspect, but did not witness, an abandonment. ' + '🌙'.repeat(350),
+      detail: '🌊'.repeat(750), feeling: 'Uncertain. ' + '🌘'.repeat(175), confidence: 0.2 });
+    return result;
+  } });
+  for (let i = 0; i < 4; i++) {
+    await f.episode(`old-${i}`, `${2000 + i}-01-01`); await f.request('memorize', { episodeId: `old-${i}` });
+  }
+  await f.episode('current', '2004-01-01');
+  const fresh = await f.request('retrieve', { episodeId: 'current', at: '2004-01-01' });
+  const history = fresh.memories.map((memory, i) => activation({ ...fresh, memories: [memory] }, `u${i}`, `a${i}`));
+  history.push({ ...history[0], replyId: 'latest', promptId: 'returned' });
+  const result = await f.request('retrieve', { episodeId: 'current', at: '2004-01-01', recallHistory: history });
+  assert.ok(result.historicalContext.length > 0 && result.historicalContext.length < 4);
+  assert.ok(JSON.stringify(result.historicalContext).length <= 6000);
+  const repeated = result.historicalContext.find(item => item.replyId === 'latest');
+  assert.equal(repeated.firstSupplied.replyId, 'a0'); assert.equal(repeated.firstSupplied.promptId, 'u0');
+  assert.match(repeated.gist, /^I suspect, but did not witness/); assert.ok(repeated.confidence <= 0.2);
+});
+
+test('obsolete historical references cannot restore memory after re-memorization, correction, withdrawal, deletion or rebuilding', async t => {
+  for (const action of ['rememorize', 'correct', 'withdraw', 'delete', 'rebuild']) await t.test(action, async t => {
+    const f = fixture(t);
+    await f.episode('old', '2000-01-01'); await f.request('memorize', { episodeId: 'old', modelKey: 'original' });
+    await f.episode('current', '2010-01-01');
+    const recalled = await f.request('retrieve', { episodeId: 'current', at: '2010-01-01' });
+    const history = [activation(recalled, 'current:user', 'current:assistant')];
+    f.sources.get('current').recallHistory = history;
+    assert.equal((await f.request('retrieve', { episodeId: 'current', at: '2010-01-01', recallHistory: history })).historicalContext.length, 1);
+    if (action === 'rememorize') {
+      f.sources.get('old').messages[0].text += ' Changed played experience.';
+      await f.request('memorize', { episodeId: 'old' });
+    } else if (action === 'correct') {
+      const preview = await correctionPreview(f, 'old'); await f.request('applyCorrection', { token: preview.token });
+    } else if (action === 'withdraw') await f.request('unmemorize', { episodeId: 'old' });
+    else if (action === 'delete') await f.request('forget', { episodeId: 'old' });
+    else await f.request('rebuild', { force: true, modelKey: 'different-sampler' });
+    await f.restart();
+    const next = await f.request('retrieve', { episodeId: 'current', at: '2010-01-01', recallHistory: history });
+    assert.deepEqual(next.historicalContext, []); assert.equal(next.historicalText, '');
+    await f.request('memorize', { episodeId: 'current' });
+    assert.equal(f.calls.at(-1).request.input.recallHistory, undefined);
+  });
+});
+
+test('history excludes later activations, later and current episodes, invalid references and unplayed reflection associations', async t => {
+  const f = fixture(t);
+  for (const [id, date] of [['old', '2000-01-01'], ['current', '2010-01-01'], ['future', '2020-01-01']]) {
+    await f.episode(id, date); await f.request('memorize', { episodeId: id });
+  }
+  const recalled = await f.request('retrieve', { at: '2030-01-01' });
+  const history = recalled.memories.map(memory => activation({ ...recalled, memories: [memory] }, 'current:user', 'current:assistant', Date.parse('2010-01-01')));
+  const valid = history.find(item => item.memories[0].episodeId === 'old');
+  const later = { ...valid, at: Date.parse('2011-01-01') };
+  const invalid = { ...valid, memories: [{ ...valid.memories[0], memoryIndex: 9000 }] };
+  const foreign = { ...valid, memories: [{ ...valid.memories[0], episodeId: 'other-character-source' }] };
+  const result = await f.request('retrieve', { episodeId: 'current', at: '2010-01-01', recallHistory: [...history, later, invalid, foreign] });
+  assert.deepEqual(result.historicalContext.map(item => item.episodeId), ['old']);
+  assert.equal((await f.request('retrieve', { episodeId: 'current', at: '2009-01-01', recallHistory: history })).historicalText, '');
+  f.sources.get('current').recallHistory = [{ ...valid, replyId: 'not-played' }];
+  assert.equal((await f.request('memorize', { episodeId: 'current' })).status, 'current');
+  assert.equal(f.calls.at(-1).request.input.recallHistory, undefined);
+  // Current chronology wins even when a contribution was published in an earlier slot.
+  await f.request('when', { episodeId: 'old', position: '2040-01-01', resetStart: true });
+  assert.equal((await f.request('retrieve', { episodeId: 'current', at: '2010-01-01', recallHistory: [valid] })).historicalText, '');
+});
+
+test('a changed recall history during reflection rejects stale publication even when dialogue is unchanged', async t => {
+  let mutate = false;
+  const f = fixture(t, { infer: request => {
+    if (mutate) f.sources.get('current').recallHistory = [];
+    return reflection(request);
+  } });
+  await f.episode('old', '2000-01-01'); await f.request('memorize', { episodeId: 'old' });
+  await f.episode('current', '2010-01-01');
+  const recalled = await f.request('retrieve', { episodeId: 'current', at: '2010-01-01' });
+  f.sources.get('current').recallHistory = [activation(recalled, 'current:user', 'current:assistant')];
+  const before = f.contributions(); mutate = true;
+  await assert.rejects(f.request('memorize', { episodeId: 'current' }), { code: 'STALE_SOURCE' });
+  assert.deepEqual(f.contributions(), before);
+});
+
 test('repair rebuild preserves a later correction without resampling unchanged earlier memory', async t => {
   let sample = 0;
   const f = fixture(t, { infer: request => {
