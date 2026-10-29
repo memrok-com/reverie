@@ -294,7 +294,7 @@ impl Reverie {
         )?)
     }
 
-    /// Resolve once and preview the complete selected interval before changing chronology.
+    /// Keep the selected end while validating the full branch extent supplied by the host.
     pub fn preview_redate(&self, params: &Value) -> Result<Value> {
         let id = required(params, "episodeId")?;
         identifier(id, "Episode identity")?;
@@ -314,6 +314,20 @@ impl Reverie {
         let delta = start
             .checked_sub(before.start)
             .ok_or_else(|| Error::new("INVALID_TIME", "The date shift is too large."))?;
+        let branch_end_before = params
+            .get("branchEnd")
+            .map(fictional_time)
+            .transpose()?
+            .unwrap_or(before.now)
+            .max(before.now);
+        let branch_end_after = branch_end_before.checked_add(delta).ok_or_else(|| {
+            Error::new(
+                "INVALID_TIME",
+                "A shifted branch end is outside the supported calendar.",
+            )
+        })?;
+        fictional_time(&json!(branch_end_after))?;
+        crate::time::iso(branch_end_after)?;
         let mut after = before.clone();
         after.start = start;
         after.now = before.now.checked_add(delta).ok_or_else(|| {
@@ -366,6 +380,8 @@ impl Reverie {
                 )
             })?;
         *target = after.clone();
+        // Validate every translated branch without changing which one is selected.
+        target.now = branch_end_after;
         assert_intervals(&episodes)?;
         let contributions = store.contributions(&self.character_id)?;
         let cutoff = contributions
@@ -402,7 +418,8 @@ impl Reverie {
             .collect();
         let preview = json!({"token":uuid::Uuid::new_v4().to_string(),"revision":revision,
             "before":before,"after":after,"delta":delta,"affected":affected,"releasedPins":released_pins,
-            "earlierBefore":earlier_before,"earlierAfter":earlier_after});
+            "earlierBefore":earlier_before,"earlierAfter":earlier_after,
+            "branchEndBefore":branch_end_before,"branchEndAfter":branch_end_after});
         drop(store);
         *self.redate_preview.lock().unwrap() = Some(preview.clone());
         Ok(preview)

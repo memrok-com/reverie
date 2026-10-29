@@ -913,6 +913,60 @@ test('episode re-date preserves source and branch times through new jumps, repea
   assert.equal(f.errors.length + restarted.errors.length, 0);
 });
 
+test('active and saved episode re-dates check longer unselected branches and keep them playable after restart', async t => {
+  const f = await fixture(t); await f.setup();
+  f.inputs.push('2000-01-01 M'); await f.session.prompt('We arrive.');
+  const moving = f.manager.getSessionId(), firstLeaf = f.manager.getLeafId();
+  await f.command('when 2000-01-10'); await f.session.prompt('Long branch.');
+  const longLeaf = f.manager.getLeafId();
+  await f.session.navigateTree(firstLeaf, { summarize: false });
+  await f.command('when 2000-01-02'); await f.session.prompt('Short branch.');
+  const shortLeaf = f.manager.getLeafId(), entries = structuredClone(f.manager.getEntries());
+  const selected = extractSource(f.manager.getBranch());
+  await f.runtime.newSession(); f.inputs.push('2000-02-01 N'); await f.session.prompt('Neighbour scene.');
+  const requests = f.requests.length;
+  await f.command(`redate ${moving} 2000-01-25`);
+  assert.match(f.notices.at(-1).message, /overlaps/);
+  assert.match(f.notices.at(-1).message, /2000-02-03/);
+  assert.equal((await memorySnapshot(f)).episodes.find(item => item.episode.id === moving).episode.start, Date.UTC(2000, 0, 1));
+  f.choices.push(0, 'Resume'); await f.command('chats');
+  assert.equal(f.manager.getLeafId(), shortLeaf);
+  await f.command(`redate ${moving} 2000-01-25`);
+  assert.match(f.notices.at(-1).message, /overlaps/);
+  assert.equal(f.manager.getLeafId(), shortLeaf);
+  assert.deepEqual(f.manager.getEntries(), entries);
+  await f.command(`redate ${moving} 2000-01-15T01:00Z`);
+  assert.match(f.inspections.at(-1), /All branches after: 2000-01-15T01:00:00.000Z → 2000-01-24T01:00:00.000Z/);
+  assert.match(f.inspections.at(-1), /14 days 1 hour/);
+  assert.match(f.widgets.get('reverie')[0], /2000-01-16T01:00/);
+  assert.equal(f.manager.getLeafId(), shortLeaf);
+  assert.deepEqual(extractSource(f.manager.getBranch()), selected);
+  assert.equal(f.requests.length, requests);
+  const path = f.manager.getSessionFile(); await f.close();
+  const restarted = await fixture(t, { root: f.root, path });
+  await restarted.session.navigateTree(longLeaf, { summarize: false });
+  assert.match(restarted.widgets.get('reverie')[0], /2000-01-24T01:00/);
+  await restarted.session.prompt('Continue the long branch.');
+  assert.match(extractSource(restarted.manager.getBranch()).messages.at(-1).text, /Reply/);
+  assert.equal(f.errors.length + restarted.errors.length, 0);
+});
+
+test('re-date rechecks branch extent after confirmation even when native chronology has not changed', async t => {
+  const f = await fixture(t); await f.setup();
+  f.inputs.push('2000-01-01 Moving'); await f.session.prompt('We arrive.');
+  const id = f.manager.getSessionId(), before = await memorySnapshot(f);
+  f.controls.onConfirm = async () => {
+    f.controls.onConfirm = undefined;
+    f.manager.appendCustomEntry('reverie.time', { now: Date.UTC(2000, 0, 10), offset: 0 });
+  };
+  await f.command(`redate ${id} 2000-01-15`);
+  assert.match(f.notices.at(-1).message, /branch date changed after the preview/);
+  const after = await memorySnapshot(f);
+  assert.equal(after.revision, before.revision);
+  assert.equal(after.episodes[0].episode.start, Date.UTC(2000, 0, 1));
+  assert.equal(f.errors.length, 0);
+});
+
 test('re-date preview lists dependent memories and corrections, cancels cleanly and rejects a concurrent change', async t => {
   const f = await fixture(t); await f.setup();
   const early = await memorizeEpisode(f, '2000-01-01', 'Early');

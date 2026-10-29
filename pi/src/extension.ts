@@ -11,13 +11,13 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { Catalog, type Character } from './catalog.js';
 import { MemoryService, executablePath } from './service.js';
-import { alternatives, extractSource, ownerOf, sourceHash, textContent } from './source.js';
+import { alternatives, extractSource, ownerOf, readEntriesFile, sourceHash, textContent } from './source.js';
 import type { Episode, Recall, MemoryInspection, InspectedEpisode, StoredMemory } from './contracts.js';
 import { episodeText, impressionsText, memoryText, sourcesText, stateLabel } from './memory-view.js';
 import { errorCode, errorMessage } from './errors.js';
 import { exportStory, restoreStory } from './story-backup.js';
 import { recallHistory } from './recall-history.js';
-import { anchorCandidates, branchTime, relativePlacement, resolveRelative } from './chronology.js';
+import { anchorCandidates, branchTime, episodeBranchEnd, relativePlacement, resolveRelative, shiftText } from './chronology.js';
 
 const GUIDANCE = 'Stay in character. Play only your own actions and dialogue. Recollections are subjective: distinguish uncertain impressions from witnessed events, and do not invent shared events in memory gaps.';
 const DEFAULT_KEYS = { reroll: 'ctrl+alt+r', previous: 'ctrl+alt+left', next: 'ctrl+alt+right', menu: 'ctrl+alt+m' } as const;
@@ -481,6 +481,22 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
       if (setupError) fresh.ui.notify(`Episode setup did not complete: ${errorMessage(setupError)} The previous chat remains saved. Use /reverie chats to resume it or choose another date.`, 'error');
     } });
   }
+  async function redateBranchEnd(ctx: ExtensionContext, character: Character, target: Episode): Promise<number> {
+    if (target.id === ctx.sessionManager.getSessionId()) {
+      assertOwner(ctx, character);
+      return episodeBranchEnd(ctx.sessionManager.getEntries(), target);
+    }
+    const source = catalog!.source(target.id);
+    if (!source) {
+      if (target.included || target.source_hash || target.input_hash || target.published_end !== null)
+        throw new Error('Restore this episode’s saved chat before re-dating so every branch date can be checked.');
+      return target.now; // Legacy date-only setup with no played branches to shift.
+    }
+    if (source.deleted || source.characterId !== character.id) throw new Error('This episode is no longer available to this character.');
+    const entries = await readEntriesFile(source.path);
+    if (ownerOf(entries) !== character.id) throw new Error('The saved episode belongs to another character.');
+    return episodeBranchEnd(entries, target);
+  }
   async function redateEpisode(ctx: ExtensionCommandContext, character: Character, id?: string, input?: string): Promise<void> {
     if (!ctx.isIdle() || working) throw new Error('Finish or cancel the current operation before re-dating.');
     const inspection = await inspectMemory(ctx, character);
@@ -492,12 +508,15 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
     const placement = await resolvePlacement(ctx, character, raw); if (!placement) return;
     if (placement.label) throw new Error('Re-dating accepts a new start date or relative date. The episode keeps its label.');
     const client = service!.client(character.id);
-    const preview = await client.request('previewRedate', { episodeId: target.episode.id, position: placement.position, revision: inspection.revision });
+    const branchEnd = await redateBranchEnd(ctx, character, target.episode);
+    const preview = await client.request('previewRedate', { episodeId: target.episode.id, position: placement.position, revision: inspection.revision, branchEnd });
     const label = (id: string) => inspection.episodes.find(item => item.episode.id === id)?.episode.label ?? id;
     const range = (item: Episode) => `${new Date(item.start).toISOString()} → ${new Date(item.now).toISOString()}`;
     const lines = [preview.before.label, `Before: ${range(preview.before)}`, `After: ${range(preview.after)}`,
+      `All branches before: ${range({ ...preview.before, now: preview.branchEndBefore })}`,
+      `All branches after: ${range({ ...preview.after, now: preview.branchEndAfter })}`,
       placement.explanation ?? 'This is a one-time explicit date change.',
-      `Move the entire selected interval by ${preview.delta / 86_400_000} days. All branch time jumps shift by the same amount; their spacing and selected branch are preserved.`,
+      `Move the entire episode by ${shiftText(preview.delta)}. All branch time jumps shift by the same amount; their spacing and selected branch are preserved.`,
       'Earlier recollections become eligible at or after their episode ends. Moving an episode can change which earlier memories it and later scenes may use.',
       `Included episodes preceding this scene before: ${preview.earlierBefore.map(label).join(', ') || '(none)'}.`,
       `Included episodes preceding this scene after: ${preview.earlierAfter.map(label).join(', ') || '(none)'}. Invalidated contributions are withheld until rebuilt.`,
@@ -508,9 +527,10 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
       'Rebuild memory afterward to form contributions against the new chronology. This action makes no model calls.',
       'Dates mentioned in played dialogue are not rewritten. Source continuity may need your attention. Saved reply explanations describe their original context; invalidated references cannot supply character memory.'];
     await show(ctx, 'Preview episode re-date', lines.filter(Boolean).join('\n\n'));
-    if (!await ctx.ui.confirm('Apply episode re-date?', `${preview.before.label}\n${range(preview.before)} → ${range(preview.after)}\nInvalidate ${preview.affected.length} contributions and release ${preview.releasedPins.length} reviewed corrections as previewed? Dialogue dates may need attention.`)) return;
+    if (!await ctx.ui.confirm('Apply episode re-date?', `${preview.before.label}\n${range(preview.before)} → ${range(preview.after)}\nFurthest branch end after: ${new Date(preview.branchEndAfter).toISOString()}\nInvalidate ${preview.affected.length} contributions and release ${preview.releasedPins.length} reviewed corrections as previewed? Dialogue dates may need attention.`)) return;
     if (!ctx.isIdle() || working || context?.sessionManager.getSessionId() !== ctx.sessionManager.getSessionId()
       || selected(ctx, false)?.id !== character.id) throw new Error('The active chat changed. Open the re-date preview again.');
+    if (await redateBranchEnd(ctx, character, target.episode) !== branchEnd) throw new Error('An episode branch date changed after the preview. Preview again.');
     await client.request('applyRedate', { token: preview.token });
     lastRecall = undefined;
     await refresh(ctx);

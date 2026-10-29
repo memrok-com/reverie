@@ -46,8 +46,11 @@ export async function readSourceFile(path: string, leaf: string | null): Promise
   return extractSource(await readBranchFile(path, leaf));
 }
 export async function readBranchFile(path: string, leaf: string | null): Promise<Entry[]> {
+  return branchOf(await readEntriesFile(path), leaf);
+}
+export async function readEntriesFile(path: string): Promise<Entry[]> {
   const rows = (await readFile(path, 'utf8')).split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line));
-  return branchOf(rows.filter(row => row.type !== 'session'), leaf);
+  return rows.filter(row => row.type !== 'session');
 }
 export function sourceHash(source: SourceObservation): string {
   return createHash('sha256').update(JSON.stringify({ messages: source.messages, foundation: source.foundation })).digest('hex');

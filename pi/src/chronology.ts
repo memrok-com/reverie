@@ -31,3 +31,31 @@ export function branchTime(branch: Entry[], episode: Episode): number | undefine
   const time = entry?.data as { now?: number; offset?: number } | undefined;
   return typeof time?.now === 'number' ? time.now - (time.offset ?? 0) + (episode.time_offset ?? 0) : undefined;
 }
+
+/** Every time entry can be restored by tree navigation, including unselected branches. */
+export function episodeBranchEnd(entries: Entry[], episode: Episode): number {
+  let end = episode.now;
+  for (const entry of entries) {
+    if (entry.type !== 'custom' || entry.customType !== 'reverie.time') continue;
+    const time = entry.data as { now?: number; offset?: number } | undefined;
+    const at = branchTime([entry], episode);
+    if (!Number.isSafeInteger(time?.now) || (time?.offset !== undefined && !Number.isSafeInteger(time.offset))
+      || !Number.isSafeInteger(at) || !Number.isFinite(new Date(at!).getTime())) {
+      throw new Error('An episode time entry is invalid. Restore its source before re-dating.');
+    }
+    end = Math.max(end, at!);
+  }
+  return end;
+}
+
+export function shiftText(delta: number): string {
+  if (!delta) return '0 milliseconds';
+  let remaining = Math.abs(delta);
+  const parts: string[] = [];
+  for (const [unit, size] of [['day', 86_400_000], ['hour', 3_600_000], ['minute', 60_000], ['second', 1000], ['millisecond', 1]] as const) {
+    const count = Math.floor(remaining / size);
+    if (count) parts.push(`${count} ${unit}${count === 1 ? '' : 's'}`);
+    remaining %= size;
+  }
+  return `${parts.join(' ')} ${delta < 0 ? 'earlier' : 'later'}`;
+}

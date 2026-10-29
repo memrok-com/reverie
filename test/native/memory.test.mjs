@@ -66,6 +66,26 @@ test('moving a scene later preserves earlier contributions and invalidates the o
   assert.deepEqual(f.contributions().map(item => item.episodeId), ['early', 'middle', 'moving']);
 });
 
+test('re-date validates the furthest branch end without replacing the selected branch end', async t => {
+  const f = fixture(t);
+  await f.episode('moving', '2000-01-01', 'M');
+  await f.request('when', { episodeId: 'moving', position: '2000-01-10' });
+  await f.request('when', { episodeId: 'moving', position: '2000-01-02', branchSelection: true });
+  await f.episode('neighbour', '2000-02-01', 'N');
+  const before = await f.request('status'), revision = before.revision;
+  await assert.rejects(f.request('previewRedate', { episodeId: 'moving', revision, position: '2000-01-25', branchEnd: '2000-01-10' }),
+    error => error.code === 'INTERLEAVING_EPISODES' && /2000-02-03/.test(error.message) && /M/.test(error.message) && /N/.test(error.message));
+  assert.deepEqual(await f.request('status'), before);
+  const preview = await f.request('previewRedate', { episodeId: 'moving', revision, position: '2000-01-15', branchEnd: '2000-01-10' });
+  assert.equal(preview.branchEndBefore, Date.UTC(2000, 0, 10));
+  assert.equal(preview.branchEndAfter, Date.UTC(2000, 0, 24));
+  assert.equal(preview.after.now, Date.UTC(2000, 0, 16));
+  await f.request('applyRedate', { token: preview.token });
+  await f.request('when', { episodeId: 'moving', position: '2000-01-24', branchSelection: true });
+  assert.equal((await f.request('status')).episodes[0].now, Date.UTC(2000, 0, 24));
+  assert.equal(f.calls.length, 0);
+});
+
 test('re-date validates the end as well as start and rejects cross-character, stale and foreign preview tokens', async t => {
   const f = fixture(t);
   await f.episode('moving', '2000-01-01', 'Moving');
