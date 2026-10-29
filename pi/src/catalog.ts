@@ -23,6 +23,7 @@ function deletionScope(text: string): RecallDeletionScope {
 function recallEpisodeIds(value: unknown): Set<string> {
   const ids = new Set<string>();
   if (!record(value)) return ids;
+  if (typeof value.impressionEpisodeId === 'string') ids.add(value.impressionEpisodeId);
   for (const items of [value.memories, value.historicalContext]) if (Array.isArray(items)) {
     for (const item of items) if (record(item) && typeof item.episodeId === 'string') ids.add(item.episodeId);
   }
@@ -30,6 +31,15 @@ function recallEpisodeIds(value: unknown): Set<string> {
   if (Array.isArray(value.impressions)) for (const item of value.impressions) if (record(item)) lists.push(item.sourceEpisodeIds);
   for (const list of lists) if (Array.isArray(list)) for (const id of list) if (typeof id === 'string') ids.add(id);
   return ids;
+}
+function unattributedImpressions(value: unknown): boolean {
+  return record(value) && Array.isArray(value.impressions) && value.impressions.length > 0
+    && (typeof value.impressionEpisodeId !== 'string' || !value.impressionEpisodeId);
+}
+function withoutLegacyImpressions(value: Record<string, unknown>): Record<string, unknown> {
+  // Preserve fresh-memory activations: removing the entire legacy reply could
+  // change earlier episodes' reflection inputs on the next rebuild.
+  return { ...value, impressions: [], impressionEpisodeId: null, text: '', legacyImpressionsRemoved: true };
 }
 function directoryKey(cwd: string): string {
   const canonical = realpathSync(cwd);
@@ -40,6 +50,8 @@ export class Catalog {
   readonly db: DatabaseSync;
   readonly memoryPath: string;
   private unavailableSources = new Set<string>();
+  /** Diagnostic count for late/obsolete contexts rejected in this process. */
+  discardedRecallCount = 0;
   constructor(readonly directory: string, private sourceAccess: typeof access = access) {
     mkdirSync(directory, { recursive: true }); this.memoryPath = join(directory, 'memory.sqlite');
     this.db = new DatabaseSync(join(directory, 'catalog.sqlite'));
@@ -159,6 +171,15 @@ export class Catalog {
         (SELECT episodeId FROM sources WHERE characterId=(SELECT characterId FROM sources WHERE episodeId=?))`);
       // Include contexts saved after planning but before acknowledgment.
       for (const replyId of new Set([...scope.replyIds, ...this.referencingRecalls(id)])) removeReply.run(replyId, id);
+      // An old record may not name its impression author anywhere. Remove only
+      // that ambiguous prose and its rendered copy, retaining unrelated memory
+      // references and played-prefix evidence needed by surviving reflection.
+      const redact = this.db.prepare('UPDATE recalls SET data=? WHERE replyId=?');
+      for (const row of this.db.prepare(`SELECT r.replyId,r.data FROM recalls r JOIN sources s ON s.episodeId=r.episodeId
+        WHERE s.characterId=(SELECT characterId FROM sources WHERE episodeId=?)`).all(id)) {
+        const data: unknown = JSON.parse(String(row.data));
+        if (record(data) && unattributedImpressions(data)) redact.run(JSON.stringify(withoutLegacyImpressions(data)), row.replyId);
+      }
       this.db.prepare('UPDATE sources SET deleted=2 WHERE episodeId=? AND deleted=1').run(id);
       this.db.prepare('DELETE FROM recall_deletions WHERE episodeId=?').run(id);
       this.db.exec('COMMIT');
@@ -173,11 +194,14 @@ export class Catalog {
       if (owner && !obsolete) {
         const deleted = this.db.prepare('SELECT 1 FROM sources WHERE episodeId=? AND characterId=? AND deleted<>0');
         for (const reference of recallEpisodeIds(data)) if (deleted.get(reference, owner)) { obsolete = true; break; }
+        if (!obsolete && record(data) && unattributedImpressions(data) && this.db.prepare(
+          'SELECT 1 FROM sources WHERE characterId=? AND deleted<>0 LIMIT 1').get(owner)) data = withoutLegacyImpressions(data);
       }
       // A reply started before deletion may finish after cleanup. Never save its
       // removed background again, or write new records for a deleted source.
       if (!obsolete) this.db.prepare('INSERT INTO recalls VALUES(?,?,?) ON CONFLICT(replyId) DO UPDATE SET data=excluded.data')
         .run(episodeId, replyId, JSON.stringify(data));
+      else this.discardedRecallCount++;
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }

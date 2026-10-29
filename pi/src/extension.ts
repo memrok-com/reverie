@@ -30,7 +30,9 @@ function episodeTitle(episode: Episode, characterName: string): string {
 
 function describeRecall(recall: Recall, episodes: Episode[]): string {
   const label = (id: string) => episodes.find(item => item.id === id)?.label ?? id;
-  const lines = ['Current retrieval', recall.text || 'No recollections are available at this fictional point.'];
+  const lines = ['Current retrieval', recall.legacyImpressionsRemoved
+    ? 'Older impression context was removed during episode deletion because its author was not recorded. The recollections below remain available.'
+    : recall.text || 'No recollections are available at this fictional point.'];
   if (recall.historySources.length) lines.push('', `Shared history sources: ${recall.historySources.map(label).join(', ')}`);
   for (const impression of recall.impressions) lines.push(`Impression “${impression.text}” — sources: ${impression.sourceEpisodeIds.map(label).join(', ')}`);
   for (const memory of recall.memories) lines.push(`“${memory.gist}” — ${label(memory.episodeId)} · messages: ${memory.sourceMessageIds.join(', ')}`);

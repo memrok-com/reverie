@@ -226,6 +226,7 @@ pub struct Recall {
     pub historical_context: Vec<HistoricalRecall>,
     pub historical_text: String,
     pub impressions: Vec<Impression>,
+    pub impression_episode_id: Option<String>,
     pub shared_history: String,
     pub history_sources: Vec<String>,
     pub text: String,

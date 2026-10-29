@@ -13,14 +13,14 @@ import { exportStory } from '../../.work/pi-test/story-backup.mjs';
 import { reflection } from '../fixtures/subjective.mjs';
 import { nativeEnginePath } from '../../scripts/lib/native-toolchain.mjs';
 
-async function fixture(t) {
+async function fixture(t, transform = result => result) {
   const root = resolve('.work/recall-deletion-tests', randomUUID()), home = join(root, 'data');
   await mkdir(root, { recursive: true });
   const catalog = new Catalog(home), character = catalog.create('Mara', 'You are Mara, proud and wary.'), calls = [];
   const infer = async request => {
     calls.push(request.input.episode.label);
     const result = reflection(request); result.memories[0].detail += ` sample ${calls.length}`;
-    return JSON.stringify(result);
+    return JSON.stringify(transform(result, request));
   };
   const service = new MemoryService(catalog, nativeEnginePath(), infer), client = service.client(character.id);
   let closed = false;
@@ -188,6 +188,91 @@ for (const field of ['historicalContext', 'impressions', 'historySources']) test
   await f.client.request('unmemorize', { episodeId: a.id });
   await f.service.forget(a.id, f.character.id);
   assert.equal(f.catalog.recall(b.reply, b.id), undefined);
+});
+
+for (const legacy of [false, true]) test(`withdraw-then-delete removes ${legacy ? 'legacy unattributed' : 'snapshot-owner'} impressions that cite only an earlier episode`, async t => {
+  const prose = 'The borrowed lantern leaves me unable to trust his kindness.';
+  const f = await fixture(t, (result, request) => request.input.episode.label === 'E'
+    ? { memories: [], impressions: [{ text: prose, sourceEpisodeIds: [request.input.eligibleEarlierEpisodes[0].id] }] } : result);
+  const a = await f.episode('A', '2000-01-01'), e = await f.episode('E', '2010-01-01');
+  const b = await f.episode('B', '2020-01-01', { memorize: false });
+  assert.ok(b.recall.impressions.some(item => item.text === prose));
+  assert.ok(b.recall.text.includes(prose));
+  assert.deepEqual(b.recall.impressions[0].sourceEpisodeIds, [a.id]);
+  assert.ok(!b.recall.memories.some(item => item.episodeId === e.id));
+  assert.ok(!JSON.stringify(b.recall.historicalContext).includes(e.id));
+  assert.ok(!b.recall.historySources.includes(e.id));
+  const saved = { ...b.recall };
+  if (legacy) delete saved.impressionEpisodeId;
+  f.catalog.saveRecall(b.id, b.reply, saved);
+  await f.client.request('unmemorize', { episodeId: e.id });
+  await f.service.forget(e.id, f.character.id);
+  if (legacy) {
+    const cleaned = f.catalog.recall(b.reply, b.id);
+    assert.deepEqual(cleaned.memories, saved.memories);
+    assert.deepEqual(cleaned.impressions, []);
+    assert.equal(cleaned.text, '');
+    assert.equal(cleaned.legacyImpressionsRemoved, true);
+  } else assert.equal(f.catalog.recall(b.reply, b.id), undefined);
+  const archive = join(f.root, 'deleted-impression.zip');
+  await exportStory(f.catalog, f.character.id, archive, f.root);
+  assert.ok(Object.values(unzipSync(await readFile(archive))).every(bytes => !Buffer.from(bytes).toString('utf8').includes(prose)));
+  if (!legacy) {
+    assert.equal(b.recall.impressionEpisodeId, e.id);
+    assert.equal(a.recall.impressionEpisodeId, null);
+    assert.equal(e.recall.impressionEpisodeId, a.id);
+    assert.equal(f.catalog.recall(e.reply, e.id), undefined);
+    assert.deepEqual(f.catalog.recall(a.reply, a.id), a.recall);
+  }
+  const discarded = f.catalog.discardedRecallCount;
+  f.catalog.saveRecall(b.id, 'late-impression', saved);
+  if (legacy) assert.ok(!JSON.stringify(f.catalog.recall('late-impression', b.id)).includes(prose));
+  else assert.equal(f.catalog.recall('late-impression', b.id), undefined);
+  assert.equal(f.catalog.discardedRecallCount, discarded + (legacy ? 0 : 1));
+});
+
+test('snapshot-owner cleanup survives restart and removes an impression-only context written after planning', async t => {
+  const f = await fixture(t, (result, request) => request.input.episode.label === 'E'
+    ? { memories: [], impressions: [{ text: 'His kindness feels rehearsed.', sourceEpisodeIds: [request.input.eligibleEarlierEpisodes[0].id] }] } : result);
+  await f.episode('A', '2000-01-01');
+  const e = await f.episode('E', '2010-01-01'), b = await f.episode('B', '2020-01-01', { memorize: false });
+  await f.client.request('unmemorize', { episodeId: e.id });
+  f.catalog.acknowledgeDeletion = () => { throw new Error('Interrupted impression cleanup'); };
+  await assert.rejects(f.service.forget(e.id, f.character.id), /Interrupted impression cleanup/);
+  const plan = JSON.parse(f.catalog.db.prepare('SELECT affected FROM recall_deletions WHERE episodeId=?').get(e.id).affected);
+  assert.ok(plan.replyIds.includes(b.reply));
+  f.catalog.db.prepare('INSERT INTO recalls VALUES(?,?,?)').run(b.id, 'late-impression-context', JSON.stringify(b.recall));
+  await f.close();
+  const catalog = new Catalog(f.home), service = new MemoryService(catalog, nativeEnginePath(), f.infer);
+  t.after(async () => { await service.close(); catalog.close(); });
+  await service.reconcile();
+  assert.equal(catalog.recall(b.reply, b.id), undefined);
+  assert.equal(catalog.recall('late-impression-context', b.id), undefined);
+});
+
+test('legacy impression fallback is character-scoped and preserves records without impressions', async t => {
+  const f = await fixture(t), a = await f.episode('A', '2000-01-01');
+  const b = await f.episode('B', '2010-01-01');
+  const contribution = (await f.inspected(b.id)).contribution;
+  const other = f.catalog.create('Anya', 'You are Anya.'), foreign = await f.episode('foreign', '2000-01-01', { owner: other, memorize: false });
+  const legacy = { ...b.recall }; delete legacy.impressionEpisodeId;
+  f.catalog.saveRecall(b.id, b.reply, legacy);
+  const history = recallHistory(f.catalog, b.manager.getBranch(), b.id, f.character.id);
+  const foreignLegacy = { ...legacy, characterId: other.id, episodeId: foreign.id };
+  f.catalog.saveRecall(foreign.id, foreign.reply, foreignLegacy);
+  const noImpressions = { ...legacy, impressions: [], text: '' };
+  f.catalog.saveRecall(b.id, 'no-impressions', noImpressions);
+  const draft = await f.episode('never-published', '2020-01-01', { memorize: false });
+  const calls = f.calls.length;
+  await f.service.forget(draft.id, f.character.id);
+  assert.deepEqual(f.catalog.recall(b.reply, b.id).impressions, []);
+  assert.deepEqual(recallHistory(f.catalog, b.manager.getBranch(), b.id, f.character.id), history);
+  assert.deepEqual(f.catalog.recall(a.reply, a.id), a.recall);
+  assert.deepEqual(f.catalog.recall('no-impressions', b.id), noImpressions);
+  assert.deepEqual(f.catalog.recall(foreign.reply, foreign.id), foreignLegacy);
+  assert.equal((await f.client.request('rebuild')).reflected, 0);
+  assert.equal(f.calls.length, calls);
+  assert.deepEqual((await f.inspected(b.id)).contribution, contribution);
 });
 
 test('reference cleanup preserves unrelated replies in the same re-dated episode and isolates other characters', async t => {

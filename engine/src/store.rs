@@ -17,6 +17,7 @@ pub struct Candidate {
 
 pub struct History {
     pub impressions: Vec<Impression>,
+    pub impression_episode_id: Option<String>,
     pub first: Option<i64>,
     pub history_sources: Vec<String>,
 }
@@ -434,13 +435,16 @@ impl MemoryStore {
             AND (?4 IS NULL OR EXISTS(SELECT 1 FROM episodes e WHERE e.character_id=c.character_id AND e.id=c.episode_id AND e.start<?4))
             ORDER BY c.start,c.episode_id LIMIT 1")?
             .query_row(params![character, now, active, active_start], |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
-        let impressions = snapshot
+        let snapshot = snapshot
             .map(|text| serde_json::from_str::<Contribution>(&text))
-            .transpose()?
-            .map(|item| item.impressions)
-            .unwrap_or_default();
+            .transpose()?;
+        // Impression citations identify supporting events, which need not include
+        // the episode that authored this complete snapshot.
+        let impression_episode_id = snapshot.as_ref().map(|item| item.episode_id.clone());
+        let impressions = snapshot.map(|item| item.impressions).unwrap_or_default();
         Ok(History {
             impressions,
+            impression_episode_id,
             first: first.as_ref().map(|(start, _)| *start),
             history_sources: first.map(|(_, id)| vec![id]).unwrap_or_default(),
         })

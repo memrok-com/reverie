@@ -1160,6 +1160,11 @@ impl Reverie {
         } else {
             lines.join("\n")
         };
+        let impression_episode_id = if impressions.is_empty() {
+            None
+        } else {
+            history.impression_episode_id
+        };
         Ok(Recall {
             character_id: self.character_id.clone(),
             episode_id: episode_id.into(),
@@ -1168,6 +1173,7 @@ impl Reverie {
             historical_context,
             historical_text,
             impressions,
+            impression_episode_id,
             shared_history,
             history_sources: history.history_sources,
             text,
