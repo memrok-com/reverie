@@ -6,7 +6,7 @@ export interface Recall { characterId: string; episodeId: string; at: number; me
 export interface UpdateResult { status: 'current' | 'published'; reflected: number; includedEpisodes: number; removedEpisodes?: string[] }
 export interface MemoryStatus { characterId: string; revision: number; episodes: Episode[]; memories: number; operation: { kind: string; stage: string; completed: number; total: number } | null }
 export interface StoredMemory { gist: string; detail: string; feeling: string; cues: string[]; salience: number; confidence: number; sourceMessageIds: string[] }
-export interface Contribution { episodeId: string; label: string; start: number; end: number; sourceHash: string; inputHash: string; stateHash: string; dependencies: string[]; memories: StoredMemory[]; impressions: { text: string; sourceEpisodeIds: string[] }[] }
+export interface Contribution { episodeId: string; label: string; start: number; end: number; sourceHash: string; inputHash: string; reuseHash?: string; modelKey?: string; stateHash: string; dependencies: string[]; memories: StoredMemory[]; impressions: { text: string; sourceEpisodeIds: string[] }[] }
 export interface InspectedEpisode {
   episode: Episode; state: 'not-memorized' | 'invalidated' | 'stale' | 'empty' | 'published';
   freshness: 'current' | 'stale' | 'deleted' | 'unavailable'; sourceError: string | null;

@@ -32,6 +32,11 @@ pub struct Contribution {
     pub end: i64,
     pub source_hash: String,
     pub input_hash: String,
+    /// Model-independent reuse validation; absent in legacy contributions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reuse_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_key: Option<String>,
     pub dependencies: Vec<String>,
     pub memories: Vec<Memory>,
     pub impressions: Vec<Impression>,
