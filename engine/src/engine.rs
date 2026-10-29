@@ -450,6 +450,8 @@ impl Reverie {
                     end: episode.now,
                     source_hash: pin.source_hash.clone(),
                     input_hash: String::new(),
+                    reuse_hash: None,
+                    model_key: None,
                     dependencies: Vec::new(),
                     memories: pin.memories.clone(),
                     impressions: Vec::new(),
@@ -508,9 +510,12 @@ impl Reverie {
         }
         after.impressions.clear();
         after.input_hash.clear();
+        after.reuse_hash = None;
         after.state_hash.clear();
         let mut hash_input = serde_json::to_value(&after)?;
         hash_input.as_object_mut().unwrap().remove("stateHash");
+        hash_input.as_object_mut().unwrap().remove("reuseHash");
+        hash_input.as_object_mut().unwrap().remove("modelKey");
         after.state_hash = fingerprint(&hash_input)?;
         let affected: Vec<_> = old
             .iter()
@@ -798,6 +803,7 @@ impl Reverie {
         let mut staged: Vec<Contribution> = Vec::new();
         let mut prefix = fingerprint(&json!([]))?;
         let mut reflected = 0;
+        let mut adopted_legacy = false;
         for episode in &selected {
             let Some(source) = observations.get(&episode.id) else {
                 continue;
@@ -816,12 +822,25 @@ impl Reverie {
                 &json!({"reflectionVersion":reflection::REFLECTION_VERSION, "modelKey":model_key, "source":source.hash,
                 "start":episode.start, "end":episode.now, "label":episode.label, "prefix":prefix, "settings":self.settings}),
             )?;
+            let reuse_hash = fingerprint(
+                &json!({"reflectionVersion":reflection::REFLECTION_VERSION, "source":source.hash,
+                "start":episode.start, "end":episode.now, "label":episode.label, "prefix":prefix, "settings":self.settings}),
+            )?;
             let contribution = if !force
-                && old
-                    .get(&episode.id)
-                    .is_some_and(|item| item.input_hash == input_hash)
-            {
-                old[&episode.id].clone()
+                && old.get(&episode.id).is_some_and(|item| {
+                    item.reuse_hash
+                        .as_ref()
+                        .map_or(item.input_hash == input_hash, |hash| *hash == reuse_hash)
+                }) {
+                let mut item = old[&episode.id].clone();
+                if item.reuse_hash.is_none() {
+                    // Add validation metadata without changing published content or its
+                    // dependency identity, including prefixes pinned by corrections.
+                    item.reuse_hash = Some(reuse_hash);
+                    item.model_key = Some(model_key.into());
+                    adopted_legacy = true;
+                }
+                item
             } else {
                 self.progress(
                     cancel,
@@ -886,6 +905,8 @@ impl Reverie {
                     end: episode.now,
                     source_hash: source.hash.clone(),
                     input_hash,
+                    reuse_hash: Some(reuse_hash),
+                    model_key: Some(model_key.into()),
                     dependencies: staged.iter().map(|item| item.episode_id.clone()).collect(),
                     memories,
                     impressions,
@@ -893,6 +914,8 @@ impl Reverie {
                 };
                 let mut hash_input = serde_json::to_value(&item)?;
                 hash_input.as_object_mut().unwrap().remove("stateHash");
+                hash_input.as_object_mut().unwrap().remove("reuseHash");
+                hash_input.as_object_mut().unwrap().remove("modelKey");
                 item.state_hash = fingerprint(&hash_input)?;
                 reflected += 1;
                 item
@@ -935,7 +958,7 @@ impl Reverie {
         old_ids.sort();
         let mut new_ids: Vec<_> = staged.iter().map(|item| item.episode_id.clone()).collect();
         new_ids.sort();
-        if reflected == 0 && deleted.is_empty() && old_ids == new_ids {
+        if reflected == 0 && !adopted_legacy && deleted.is_empty() && old_ids == new_ids {
             *slot = None;
             return Ok(json!({"status":"current","reflected":0,"includedEpisodes":staged.len()}));
         }

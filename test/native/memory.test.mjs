@@ -438,6 +438,83 @@ async function correctionPreview(f, id, changes = {}, extra = {}) {
     replacement: { ...item.contribution.memories[0], gist: 'The companion carried the lantern; the player spoke.', ...changes }, ...extra });
 }
 
+test('model and thinking changes preserve earlier samples and reviewed corrections across restart', async t => {
+  let sample = 0;
+  const f = fixture(t, { infer: request => {
+    const result = reflection(request); result.memories[0].detail += ` sample ${++sample}`; return result;
+  } });
+  const low = JSON.stringify({ provider: 'p', model: 'm', thinking: 'low' });
+  for (const [id, date] of [['first', '2000-01-01'], ['corrected', '2010-01-01']]) {
+    await f.episode(id, date); await f.request('memorize', { episodeId: id, modelKey: low });
+  }
+  const preview = await correctionPreview(f, 'corrected');
+  await f.request('applyCorrection', { token: preview.token });
+  await f.request('rebuild', { modelKey: low });
+  const before = f.contributions(), calls = f.calls.length;
+  await f.restart();
+  const medium = JSON.stringify({ provider: 'p', model: 'm', thinking: 'medium' });
+  await f.episode('new', '2020-01-01');
+  assert.equal((await f.request('memorize', { episodeId: 'new', modelKey: medium })).reflected, 1);
+  assert.equal(f.calls.length, calls + 1);
+  assert.deepEqual(f.contributions().slice(0, 2), before);
+  assert.equal(f.contributions()[2].modelKey, medium);
+  const other = JSON.stringify({ provider: 'other', model: 'other', thinking: 'high' });
+  assert.equal((await f.request('rebuild', { modelKey: other })).status, 'current');
+  assert.equal((await f.request('memorize', { episodeId: 'corrected', modelKey: other })).status, 'current');
+  assert.equal(f.calls.length, calls + 1);
+});
+
+test('changed source refreshes only its contribution and dependents using the new model; forced rebuild remains explicit', async t => {
+  const f = fixture(t);
+  for (const [id, date] of [['first', '2000-01-01'], ['middle', '2010-01-01'], ['last', '2020-01-01']]) {
+    await f.episode(id, date); await f.request('memorize', { episodeId: id, modelKey: 'old' });
+  }
+  const first = f.contributions()[0], calls = f.calls.length;
+  f.sources.get('middle').messages[0].text += ' A real new experience.';
+  assert.equal((await f.request('memorize', { episodeId: 'middle', modelKey: 'new' })).reflected, 2);
+  assert.deepEqual(f.contributions()[0], first);
+  assert.deepEqual(f.calls.slice(calls).map(item => [item.context.episodeId, item.context.modelKey]), [['middle', 'new'], ['last', 'new']]);
+  assert.equal((await f.request('rebuild', { force: true, modelKey: 'explicit' })).reflected, 3);
+  assert.ok(f.contributions().every(item => item.modelKey === 'explicit'));
+});
+
+test('legacy contributions acquire independent validation without resampling or changing correction prefixes', async t => {
+  const f = fixture(t);
+  for (const [id, date] of [['first', '2000-01-01'], ['corrected', '2010-01-01']]) {
+    await f.episode(id, date); await f.request('memorize', { episodeId: id, modelKey: 'old' });
+  }
+  const preview = await correctionPreview(f, 'corrected');
+  await f.request('applyCorrection', { token: preview.token });
+  await f.request('rebuild', { modelKey: 'old' });
+  const before = f.contributions(), calls = f.calls.length;
+  await f.close();
+  const db = new DatabaseSync(f.database);
+  try {
+    for (const original of before) {
+      const item = { ...original }; delete item.reuseHash; delete item.modelKey;
+      db.prepare('UPDATE contributions SET data=? WHERE character_id=? AND episode_id=?').run(JSON.stringify(item), f.characterId, item.episodeId);
+    }
+  } finally { db.close(); }
+  f.client = f.open();
+  assert.equal((await f.request('rebuild', { modelKey: 'old' })).reflected, 0);
+  assert.deepEqual(f.contributions(), before);
+  await f.restart();
+  assert.equal((await f.request('rebuild', { modelKey: 'new' })).status, 'current');
+  assert.equal(f.calls.length, calls);
+});
+
+test('legacy contributions with an unknown original model are conservatively refreshed', async t => {
+  const f = fixture(t);
+  await f.episode('legacy', '2000-01-01'); await f.request('memorize', { episodeId: 'legacy', modelKey: 'old' });
+  const item = f.contributions()[0]; delete item.reuseHash; delete item.modelKey;
+  await f.close();
+  const db = new DatabaseSync(f.database);
+  try { db.prepare('UPDATE contributions SET data=?').run(JSON.stringify(item)); } finally { db.close(); }
+  f.client = f.open();
+  assert.equal((await f.request('rebuild', { modelKey: 'new' })).reflected, 1);
+  assert.equal(f.contributions()[0].modelKey, 'new');
+});
+
 test('repair rebuild preserves a later correction without resampling unchanged earlier memory', async t => {
   let sample = 0;
   const f = fixture(t, { infer: request => {
