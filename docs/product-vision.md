@@ -58,7 +58,7 @@ Deleting an episode from source and memory requires rebuilding affected memory f
 
 The player and RPG own any cascading edits or deletions of surviving source episodes. If a surviving episode still refers to a deleted event, Reverie rebuilds from the remaining source; it does not rewrite that dialogue or decide which other episodes should be removed. The player can change the remaining source if that reference should also disappear.
 
-The first integration rereads included source during memorize/rebuild. Explicitly withdraw an episode before removing its source; missing source otherwise fails conservatively. Ordinary rebuild repairs changed contributions and reuses unchanged published memory. Native clients can explicitly request full regeneration with `force: true`; that resamples model prose and can require releasing reviewed corrections. Missing or temporarily inaccessible source must remain distinguishable from an intentional deletion.
+The first integration rereads included source during memorize/rebuild. Explicitly withdraw an episode before removing its source; missing source otherwise fails conservatively. Ordinary rebuild repairs changed contributions and reuses unchanged published memory. Pi's separate **Regenerate with current model** action previews the model route and included episode count before confirmation; native clients can explicitly request the same full regeneration with `force: true`. This resamples model prose and can require explicitly releasing reviewed corrections. Missing or temporarily inaccessible source must remain distinguishable from an intentional deletion.
 
 ## Responsibilities
 
