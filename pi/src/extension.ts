@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { Catalog, type Character } from './catalog.js';
 import { MemoryService, executablePath } from './service.js';
-import { alternatives, extractSource, ownerOf, readEntriesFile, sourceHash, textContent } from './source.js';
+import { alternatives, branchOf, extractSource, ownerOf, readEntriesFile, sourceHash, textContent, type Entry } from './source.js';
 import type { Episode, Recall, MemoryInspection, InspectedEpisode, StoredMemory } from './contracts.js';
 import { episodeText, impressionsText, memoryText, sourcesText, stateLabel } from './memory-view.js';
 import { errorCode, errorMessage } from './errors.js';
@@ -482,9 +482,16 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
     } });
   }
   async function redateBranchEnd(ctx: ExtensionContext, character: Character, target: Episode): Promise<number> {
+    const checkedEnd = (entries: Entry[], leaf: string | null): number => {
+      const selectedTime = branchTime(branchOf(entries, leaf), target);
+      if (selectedTime !== undefined && selectedTime !== target.now) {
+        throw new Error('The selected story date could not be restored. Select a valid branch in the history tree before re-dating this episode.');
+      }
+      return episodeBranchEnd(entries, target);
+    };
     if (target.id === ctx.sessionManager.getSessionId()) {
       assertOwner(ctx, character);
-      return episodeBranchEnd(ctx.sessionManager.getEntries(), target);
+      return checkedEnd(ctx.sessionManager.getEntries(), ctx.sessionManager.getLeafId());
     }
     const source = catalog!.source(target.id);
     if (!source) {
@@ -495,7 +502,7 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
     if (source.deleted || source.characterId !== character.id) throw new Error('This episode is no longer available to this character.');
     const entries = await readEntriesFile(source.path);
     if (ownerOf(entries) !== character.id) throw new Error('The saved episode belongs to another character.');
-    return episodeBranchEnd(entries, target);
+    return checkedEnd(entries, source.leaf);
   }
   async function redateEpisode(ctx: ExtensionCommandContext, character: Character, id?: string, input?: string): Promise<void> {
     if (!ctx.isIdle() || working) throw new Error('Finish or cancel the current operation before re-dating.');

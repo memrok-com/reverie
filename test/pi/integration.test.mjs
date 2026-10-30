@@ -983,7 +983,40 @@ test('corrected pre-play dates do not block active or saved episode re-dating th
   assert.equal(f.errors.length + restarted.errors.length, 0);
 });
 
-test('re-date rechecks branch extent after confirmation even when native chronology has not changed', async t => {
+for (const saved of [false, true]) test(`re-date refuses an unrestored interior setup date in ${saved ? 'saved' : 'active'} source before changing chronology`, async t => {
+  const f = await fixture(t); await f.setup();
+  await f.command('when 2020-01-01 Moving');
+  const abandoned = f.manager.getLeafId();
+  await f.command('when 2000-01-01'); await f.session.prompt('We arrive on the corrected date.');
+  await f.command('when 2000-01-03'); await f.session.prompt('We stay two days.');
+  const moving = f.manager.getSessionId(), validLeaf = f.manager.getLeafId();
+  const played = extractSource(f.manager.getBranch());
+  await f.runtime.newSession(); f.inputs.push('2010-01-01 Neighbour'); await f.session.prompt('A later scene.');
+  f.choices.push(0, 'Resume'); await f.command('chats');
+  await f.session.navigateTree(abandoned, { summarize: false });
+  assert.equal(f.manager.getLeafId(), abandoned);
+  assert.ok(f.errors.some(error => /overlaps/.test(JSON.stringify(error))), 'The pre-existing tree restoration error is exercised.');
+  const restorationErrors = f.errors.length;
+  if (saved) await f.runtime.newSession();
+  const before = await memorySnapshot(f), requests = f.requests.length;
+  await f.command(`redate ${moving} 2000-01-02`);
+  assert.match(f.notices.at(-1).message, /selected.*date.*restored.*valid branch/i);
+  const after = await memorySnapshot(f);
+  assert.equal(after.revision, before.revision);
+  assert.deepEqual(after.episodes.map(item => item.episode), before.episodes.map(item => item.episode));
+  assert.equal(f.requests.length, requests);
+  if (!saved) {
+    assert.equal(f.manager.getLeafId(), abandoned);
+    await f.session.navigateTree(validLeaf, { summarize: false });
+    await f.command(`redate ${moving} 2000-01-02`);
+    assert.match(f.notices.at(-1).message, /Episode re-dated/);
+    assert.match(f.widgets.get('reverie')[0], /2000-01-04/);
+    assert.deepEqual(extractSource(f.manager.getBranch()), played);
+  }
+  assert.equal(f.errors.length, restorationErrors);
+});
+
+test('re-date rechecks selected branch time after confirmation even when native chronology has not changed', async t => {
   const f = await fixture(t); await f.setup();
   f.inputs.push('2000-01-01 Moving'); await f.session.prompt('We arrive.');
   const id = f.manager.getSessionId(), before = await memorySnapshot(f);
@@ -992,7 +1025,7 @@ test('re-date rechecks branch extent after confirmation even when native chronol
     f.manager.appendCustomEntry('reverie.time', { now: Date.UTC(2000, 0, 10), offset: 0 });
   };
   await f.command(`redate ${id} 2000-01-15`);
-  assert.match(f.notices.at(-1).message, /branch date changed after the preview/);
+  assert.match(f.notices.at(-1).message, /selected story date could not be restored/);
   const after = await memorySnapshot(f);
   assert.equal(after.revision, before.revision);
   assert.equal(after.episodes[0].episode.start, Date.UTC(2000, 0, 1));
