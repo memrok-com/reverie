@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { Catalog, type Character } from './catalog.js';
 import { MemoryService, executablePath } from './service.js';
-import { alternatives, branchOf, extractSource, ownerOf, readEntriesFile, sourceHash, textContent, type Entry } from './source.js';
+import { alternatives, branchOf, extractSource, ownerOf, readBranchFile, readEntriesFile, sourceHash, textContent, type Entry } from './source.js';
 import type { Episode, Recall, MemoryInspection, InspectedEpisode, StoredMemory } from './contracts.js';
 import { episodeText, impressionsText, memoryText, sourcesText, stateLabel } from './memory-view.js';
 import { ReverieError, errorCode, errorMessage } from './errors.js';
@@ -525,10 +525,12 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
     const range = (item: Episode) => `${new Date(item.start).toISOString()} → ${new Date(item.now).toISOString()}`;
     const affected = new Set(preview.affected.map(item => item.episodeId));
     const included = inspection.episodes.filter(item => item.episode.included);
-    // Ordinary repair also picks up previously pending inputs and their dependents.
-    // Count that suffix so the confirmation does not understate model usage.
-    const firstRefresh = included.findIndex(item => affected.has(item.episode.id) || item.needsRebuild || item.state === 'stale');
+    // A date-only move must not memorize unrelated unmemorized changes. Once
+    // this move affects included memory, count the full ordinary-repair scope.
+    const firstRefresh = included.some(item => affected.has(item.episode.id))
+      ? included.findIndex(item => affected.has(item.episode.id) || item.needsRebuild || item.state === 'stale') : -1;
     const refreshCount = firstRefresh < 0 ? 0 : included.length - firstRefresh;
+    if (refreshCount) await checkRedateCorrections(character, included, preview.releasedPins);
     const applyLabel = refreshCount ? 'Re-date and refresh memory' : 'Re-date';
     const date = (value: number) => new Date(value).toISOString().replace('T00:00:00.000Z', '').replace(':00.000Z', 'Z');
     const summary = ['Re-date episode?', preview.before.label === preview.before.id ? character.name : preview.before.label,
@@ -562,12 +564,30 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
     checkContext();
     const modelKey = refreshCount ? await redateModel(ctx) : undefined;
     checkContext();
+    if (refreshCount) await checkRedateCorrections(character, included, preview.releasedPins);
+    checkContext();
     if (await redateBranchEnd(ctx, character, target.episode) !== branchEnd) throw new Error('An episode branch date changed after the preview. Preview again.');
     const result = await client.request('applyRedate', { token: preview.token });
     lastRecall = undefined;
     if (result.episode.id === ctx.sessionManager.getSessionId()) episode = result.episode;
     if (modelKey) refreshRedatedMemory(ctx, character, modelKey);
     else { await refresh(ctx); ctx.ui.notify('Episode re-dated.', 'info'); }
+  }
+  async function checkRedateCorrections(character: Character, included: InspectedEpisode[], releasedPins: string[]): Promise<void> {
+    for (const item of included) {
+      if (!item.correction || releasedPins.includes(item.episode.id)) continue;
+      const label = item.episode.label === item.episode.id ? character.name : item.episode.label;
+      const saved = catalog!.source(item.episode.id);
+      let observedHash: string;
+      try {
+        if (!saved || saved.deleted || saved.characterId !== character.id) throw new Error('Reviewed source unavailable.');
+        observedHash = sourceHash(extractSource(await readBranchFile(saved.path, saved.leaf)));
+      } catch {
+        throw new Error(`Re-date not applied. Restore the played chat for reviewed memory in “${label}” before retrying.`);
+      }
+      if (observedHash !== item.correction.sourceHash) throw new Error(
+        `Re-date not applied. Reviewed memory in “${label}” no longer matches its played chat. Restore the original chat selection, or open Memory → Inspect memory to review and release that correction before retrying.`);
+    }
   }
   async function redateModel(ctx: ExtensionContext): Promise<string> {
     if (!catalog!.binding(ctx.cwd)?.enabled) throw new Error('Memory is off. Enable it before re-dating an episode that needs memory refresh.');
@@ -618,8 +638,10 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
         }
         if (succeeded) { ctx.ui.notify('Episode re-dated. Memory updated.', 'info'); return; }
         cancelled = errorCode(failure) === 'CANCELLED';
-        ctx.ui.notify(`Episode date saved. Memory refresh ${cancelled ? 'cancelled' : 'failed'}; memory is pending. ${cancelled ? '' : errorMessage(failure)}`.trim(), cancelled ? 'info' : 'error');
-        if (!sameSession() || !ctx.isIdle() || working) return;
+        const canOfferRetry = sameSession() && ctx.isIdle() && !working && !activeCommands;
+        ctx.ui.notify([`Episode date saved. Memory refresh ${cancelled ? 'cancelled' : 'failed'}; memory is pending.`,
+          cancelled ? '' : errorMessage(failure), canOfferRetry ? '' : 'Open Memory → Rebuild memory to retry.'].filter(Boolean).join(' '), cancelled ? 'info' : 'error');
+        if (!canOfferRetry) return;
         const choice = await ctx.ui.select('Date saved; memory refresh pending. Retry without changing the date again?', ['Retry memory refresh', 'Later']);
         if (choice !== 'Retry memory refresh' || !sameSession() || !ctx.isIdle() || working) return;
         working = true; retry = true;

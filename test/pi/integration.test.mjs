@@ -1079,6 +1079,24 @@ test('compact re-date confirmation warns about corrections, offers details, reje
   assert.match(f.menus.at(-1).title, /up to 2 episodes.*costs/);
   assert.match(f.menus.at(-1).title, /removes 1 reviewed correction/);
   assert.deepEqual(f.menus.at(-1).options, ['Re-date and refresh memory', 'Cancel', 'View details']);
+  // Exercise Pi's actual selector at a normal terminal width, not just the dialog stub.
+  const sdk = import.meta.resolve('@earendil-works/pi-coding-agent');
+  const { ExtensionSelectorComponent } = await import(new URL('./modes/interactive/components/extension-selector.js', sdk));
+  const { initTheme } = await import(new URL('./modes/interactive/theme/theme.js', sdk));
+  const { visibleWidth } = await import('@earendil-works/pi-tui');
+  initTheme('dark');
+  let choice, cancelled = false;
+  const selector = new ExtensionSelectorComponent(f.menus.at(-1).title, f.menus.at(-1).options,
+    value => { choice = value; }, () => { cancelled = true; });
+  try {
+    const rendered = selector.render(80);
+    assert.ok(rendered.length <= 24, 'The compact confirmation fits a normal 80×24 terminal.');
+    assert.ok(rendered.every(line => visibleWidth(line) <= 80));
+    selector.handleInput('\n'); assert.equal(choice, 'Re-date and refresh memory');
+    selector.handleInput('j'); selector.handleInput('\n'); assert.equal(choice, 'Cancel');
+    selector.handleInput('j'); selector.handleInput('\n'); assert.equal(choice, 'View details');
+    selector.handleInput('\x1b'); assert.equal(cancelled, true);
+  } finally { selector.dispose(); }
   assert.deepEqual(await memorySnapshot(f), before);
   assert.equal(f.requests.length, requests);
   f.controls.confirmDelete = true;
@@ -1097,7 +1115,7 @@ test('compact re-date confirmation warns about corrections, offers details, reje
 
 test('re-date refresh reuses earlier memory, leaves excluded episodes alone and skips a no-op', async t => {
   const f = await fixture(t); await f.setup();
-  const early = await memorizeEpisode(f, '2000-01-01', 'Early');
+  const early = await memorizeEpisode(f, '2000-01-01', 'Early'); await correctCurrentMemory(f);
   const moving = await memorizeEpisode(f, '2010-01-01', 'Moving');
   await f.runtime.newSession(); f.inputs.push('2030-01-01 Unmemorized'); await f.session.prompt('An unmemorized scene.');
   const unmemorized = f.manager.getSessionId(), before = await memorySnapshot(f), requests = f.requests.length;
@@ -1116,6 +1134,44 @@ test('re-date refresh reuses earlier memory, leaves excluded episodes alone and 
   assert.equal(f.menus.length, menus);
   assert.deepEqual(await memorySnapshot(f), after);
   assert.equal(f.requests.length, requests + 1);
+});
+
+for (const memoryOff of [false, true]) test(`date-only re-date leaves unrelated stale memory alone with memory ${memoryOff ? 'off' : 'on'}`, async t => {
+  const f = await fixture(t); await f.setup();
+  const earlier = await memorizeEpisode(f, '2000-01-01', 'Earlier');
+  await f.session.prompt('This new turn has not been memorized.');
+  await f.runtime.newSession(); f.inputs.push('2030-01-01 Unmemorized'); await f.session.prompt('A separate scene.');
+  const moving = f.manager.getSessionId();
+  if (memoryOff) await f.command('off');
+  const before = await memorySnapshot(f), requests = f.requests.length;
+  assert.equal(before.episodes.find(item => item.episode.id === earlier).state, 'stale');
+  await f.command(`redate ${moving} 2035-01-01`);
+  assert.equal(f.notices.at(-1).message, 'Episode re-dated.');
+  assert.deepEqual(f.menus.at(-1).options, ['Re-date', 'Cancel', 'View details']);
+  assert.doesNotMatch(f.menus.at(-1).title, /refresh|cost/i);
+  const after = await memorySnapshot(f);
+  assert.deepEqual(after.episodes.find(item => item.episode.id === earlier), before.episodes.find(item => item.episode.id === earlier));
+  assert.equal(after.episodes.find(item => item.episode.id === moving).episode.start, Date.UTC(2035, 0, 1));
+  assert.equal(after.episodes.find(item => item.episode.id === moving).state, 'not-memorized');
+  assert.equal(f.requests.length, requests);
+});
+
+test('re-date blocks changed reviewed source before saving dates or calling a model', async t => {
+  const f = await fixture(t); await f.setup();
+  const earlier = await memorizeEpisode(f, '2000-01-01', 'Reviewed earlier'); await correctCurrentMemory(f);
+  const earlierPath = f.manager.getSessionFile();
+  const moving = await memorizeEpisode(f, '2010-01-01', 'Moving');
+  await f.runtime.switchSession(earlierPath);
+  await f.session.prompt('This changes the source of the reviewed recollection.');
+  const before = await memorySnapshot(f), requests = f.requests.length;
+  assert.equal(before.episodes.find(item => item.episode.id === earlier).correctionStale, true);
+  f.choices.push('Re-date and refresh memory', 'Later');
+  await f.command(`redate ${moving} 2020-01-01`);
+  assert.deepEqual(await memorySnapshot(f), before);
+  assert.match(f.notices.at(-1).message, /Re-date not applied.*Reviewed earlier.*played chat/s);
+  assert.ok(!f.menus.some(menu => menu.title.startsWith('Re-date episode?')));
+  assert.equal(f.requests.length, requests);
+  assert.equal(f.errors.length, 0);
 });
 
 test('re-date checks model availability and memory settings before changing dates', async t => {
@@ -1186,6 +1242,31 @@ test('re-date refresh shows progress, can be cancelled and keeps the new date pe
   await restarted.until(() => restarted.notices.some(item => item.message.startsWith('Memory updated:')));
   assert.equal((await memorySnapshot(restarted)).episodes[0].state, 'published');
   assert.equal(f.errors.length + restarted.errors.length, 0);
+});
+
+test('re-date retry never replaces an open memory browser and later memory reviews still open', async t => {
+  const f = await fixture(t); await f.setup();
+  const moving = await memorizeEpisode(f, '2000-01-01', 'Moving');
+  f.controls.holdReflection = true;
+  await f.command(`redate ${moving} 2010-01-01`);
+  await f.until(() => f.controls.reflectionStarted);
+  f.controls.holdInspectionDialog = true;
+  const browsing = f.command('memory browse');
+  try {
+    await f.until(() => f.controls.dialogStarted);
+    // Keep a retry choice available to let the old implementation terminate cleanly.
+    f.choices.push('Later');
+    await f.command('cancel');
+    await f.until(() => f.notices.some(item => /date saved.*refresh cancelled.*pending/i.test(item.message)));
+    assert.ok(!f.menus.some(menu => menu.options.includes('Retry memory refresh')));
+    assert.ok(f.notices.some(item => /Memory → Rebuild memory/.test(item.message)));
+  } finally { f.controls.releaseDialog?.(); await browsing; }
+  f.choices.length = 0;
+  f.controls.holdInspectionDialog = false; f.controls.holdReflection = false;
+  const reviews = f.inspections.filter(text => text.includes('Published episode review')).length;
+  await f.command('memorize');
+  await f.until(() => f.inspections.filter(text => text.includes('Published episode review')).length === reviews + 1);
+  assert.equal(f.errors.length, 0);
 });
 
 test('episode history exposes full intervals and memory, and starts a scene in a gap without future recall', async t => {
