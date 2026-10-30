@@ -387,7 +387,9 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
     const sessionId = ctx.sessionManager.getSessionId();
     const { revision } = await service!.client(character.id).request('status');
     if (!await ctx.ui.confirm(`Clear ${character.name}’s memory and start a new chat?`,
-      'Permanently remove all recollections, impressions, and reviewed corrections for this character, across all linked folders. Personality, saved chats, and story dates are kept. Old episodes stay unmemorized unless you explicitly memorize them again. A new chat gives the character a clean slate. This cannot be undone.')) return;
+      'Permanently clear this character’s recollections, impressions, and reviewed corrections across all linked folders. Personality, saved chats, story dates, and past reply explanations are kept. Old episodes stay unmemorized unless you explicitly memorize them again. A new chat gives the character a clean slate. This cannot be undone.')) return;
+    const current = await service!.client(character.id).request('status');
+    if (current.revision !== revision) throw new Error('Memory changed. Review Clear memory again before continuing.');
     if (working || !ctx.isIdle() || ctx.sessionManager.getSessionId() !== sessionId || catalog!.binding(ctx.cwd)?.characterId !== character.id)
       throw new Error('The chat or character changed. Open Clear memory again.');
     remember(ctx);
@@ -408,7 +410,7 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
       if (result.cancelled) (freshContext ?? ctx).ui.notify(cleared ? 'Memory cleared. Start a new chat with /new for a clean slate.' : 'Memory clearing cancelled. Memory is unchanged.', 'info');
     } catch (error) {
       if (cleared) freshContext!.ui.notify('Memory cleared, but the new chat could not finish opening. Use /new to retry; you do not need to clear memory again.', 'error');
-      else if (freshContext) freshContext.ui.notify(errorMessage(error), 'error');
+      else if (freshContext) freshContext.ui.notify(`Memory clearing failed. A new chat was opened; use /resume to return to your previous chat. ${errorMessage(error)}`, 'error');
       else throw error;
     }
   }
@@ -829,7 +831,7 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
       return;
     }
     if (working && !['cancel', 'memory', 'explain'].includes(action)) throw new Error('Finish or cancel memory formation before changing character settings.');
-    if (action === 'clear' || (action === 'memory' && rest[0] === 'clear')) { await clearMemory(ctx, character); return; }
+    if (action === 'memory' && rest[0] === 'clear') { await clearMemory(ctx, character); return; }
     if (action === 'chats') { await chats(ctx, character); return; }
     if (action === 'redate') { await redateEpisode(ctx, character, rest[0], rest.length > 1 ? rest.slice(1).join(' ') : undefined); return; }
     if (action === 'model') {
