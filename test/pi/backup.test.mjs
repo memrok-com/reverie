@@ -13,6 +13,7 @@ import { extractSource, readBranchFile, readSourceFile, sourceHash } from '../..
 import { recallHistory } from '../../.work/pi-test/recall-history.mjs';
 import { nativeEnginePath } from '../../scripts/lib/native-toolchain.mjs';
 import { reflection } from '../fixtures/subjective.mjs';
+import { branchTime } from '../../.work/pi-test/chronology.mjs';
 
 const executable = nativeEnginePath(), hash = bytes => createHash('sha256').update(bytes).digest('hex');
 async function fixture(t, { duplicateMemories = false } = {}) {
@@ -79,7 +80,7 @@ test('story ZIP round trip relocates Pi source, preserves selected branches, cor
   await writeFile(join(f.root, 'auth.json'), '{"apiKey":"PROVIDER_SECRET_MUST_NOT_EXPORT"}');
   await exportStory(f.catalog, f.character.id, f.archive, f.cwd);
   const zip = unzipSync(await readFile(f.archive)), story = JSON.parse(Buffer.from(zip['story.json']).toString());
-  assert.equal(story.version, 1); assert.equal(story.sources.length, 3);
+  assert.equal(story.version, 2); assert.equal(story.sources.length, 3);
   assert.doesNotMatch(JSON.stringify(story), /PROVIDER_SECRET_MUST_NOT_EXPORT/);
   assert.ok(!Object.keys(zip).some(name => /auth|credentials/.test(name)));
   for (const source of story.sources) assert.equal(JSON.parse(Buffer.from(zip[source.file]).toString().split('\n')[0]).cwd, '.');
@@ -118,6 +119,34 @@ test('story ZIP round trip relocates Pi source, preserves selected branches, cor
   try { assert.equal(checked.character(restored.id).name, 'Mara'); await readFile(source.path); }
   finally { checked.close(); }
   await assert.rejects(readFile(marker), { code: 'ENOENT' });
+});
+
+test('backup preserves chronology shifts and branch metadata, and legacy archives restore with zero offset', async t => {
+  const f = await fixture(t), manager = f.managers.at(-1);
+  // Record a legacy Pi time entry, retaining the selected reply and its source IDs.
+  manager.appendCustomEntry('reverie.time', { now: Date.UTC(2030, 0, 1) });
+  f.catalog.remember({ characterId: f.character.id, episodeId: f.later, cwd: f.cwd, path: manager.getSessionFile(), leaf: manager.getLeafId() });
+  const before = await f.client.request('status');
+  const preview = await f.client.request('previewRedate', { episodeId: f.later, revision: before.revision, position: '2040-01-01' });
+  await f.client.request('applyRedate', { token: preview.token });
+  await exportStory(f.catalog, f.character.id, f.archive, f.cwd);
+  const d = await destination(t, f.root); await restoreStory(d.catalog, f.archive, d.cwd, executable);
+  const moved = (await d.service.client(f.character.id).request('status')).episodes.find(item => item.id === f.later);
+  const source = d.catalog.source(f.later), branch = await readBranchFile(source.path, source.leaf);
+  assert.equal(moved.start, Date.UTC(2040, 0, 1));
+  assert.equal(branchTime(branch, moved), Date.UTC(2040, 0, 1));
+  assert.deepEqual(extractSource(branch), extractSource(manager.getBranch()));
+
+  const old = await fixture(t), legacyDestination = await destination(t, old.root);
+  await exportStory(old.catalog, old.character.id, old.archive, old.cwd);
+  const files = unzipSync(await readFile(old.archive)), story = JSON.parse(Buffer.from(files['story.json']).toString());
+  story.version = 1;
+  for (const episode of story.native.episodes) delete episode.time_offset;
+  files['story.json'] = Buffer.from(JSON.stringify(story));
+  files['checksums.json'] = Buffer.from(JSON.stringify({ storySha256: hash(files['story.json']) }));
+  const legacyArchive = join(old.root, 'legacy.zip'); await writeFile(legacyArchive, zipSync(files));
+  await restoreStory(legacyDestination.catalog, legacyArchive, legacyDestination.cwd, executable);
+  assert.ok((await legacyDestination.service.client(old.character.id).request('status')).episodes.every(item => item.time_offset === 0));
 });
 
 test('restore preserves duplicate-prose memory indices when archived rows are reordered', async t => {

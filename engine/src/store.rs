@@ -28,6 +28,7 @@ fn episode_row(row: &Row<'_>) -> rusqlite::Result<Episode> {
         label: row.get("label")?,
         start: row.get("start")?,
         now: row.get("now")?,
+        time_offset: row.get("time_offset")?,
         included: row.get("included")?,
         source_hash: row.get("source_hash")?,
         input_hash: row.get("input_hash")?,
@@ -57,13 +58,23 @@ impl MemoryStore {
             "PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL;",
         )?;
         let version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if version > 2 {
+        if version > 3 {
             return Err(Error::new(
                 "UNSUPPORTED_DATABASE",
                 "This memory database needs a newer version of Reverie.",
             ));
         }
         db.execute_batch(include_str!("../resources/schema.sql"))?;
+        if version < 3 {
+            db.execute_batch("BEGIN IMMEDIATE")?;
+            let has_offset: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('episodes') WHERE name='time_offset')", [], |row| row.get(0))?;
+            if !has_offset {
+                db.execute_batch(
+                    "ALTER TABLE episodes ADD COLUMN time_offset INTEGER NOT NULL DEFAULT 0",
+                )?;
+            }
+            db.execute_batch("PRAGMA user_version=3; COMMIT;")?;
+        }
         db.set_prepared_statement_cache_capacity(32);
         Ok(Self { db })
     }
@@ -106,13 +117,19 @@ impl MemoryStore {
     }
 
     pub fn episodes(&self, id: &str) -> Result<Vec<Episode>> {
-        Ok(self.db.prepare_cached("SELECT id,label,start,now,included,source_hash,input_hash,published_end FROM episodes WHERE character_id=? ORDER BY start,id")?
-            .query_map([id], episode_row)?.collect::<std::result::Result<Vec<_>, _>>()?)
+        Ok(self
+            .db
+            .prepare_cached("SELECT * FROM episodes WHERE character_id=? ORDER BY start,id")?
+            .query_map([id], episode_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
     pub fn episode(&self, character: &str, episode: &str) -> Result<Option<Episode>> {
-        Ok(self.db.prepare_cached("SELECT id,label,start,now,included,source_hash,input_hash,published_end FROM episodes WHERE character_id=? AND id=?")?
-            .query_row(params![character, episode], episode_row).optional()?)
+        Ok(self
+            .db
+            .prepare_cached("SELECT * FROM episodes WHERE character_id=? AND id=?")?
+            .query_row(params![character, episode], episode_row)
+            .optional()?)
     }
 
     pub fn set_episode(&mut self, character: &str, episode: &Episode) -> Result<()> {
@@ -133,6 +150,64 @@ impl MemoryStore {
         }
         tx.execute("INSERT INTO episodes(character_id,id,label,start,now) VALUES(?,?,?,?,?) ON CONFLICT(character_id,id) DO UPDATE SET label=excluded.label,start=excluded.start,now=excluded.now",
             params![character, episode.id, episode.label, episode.start, episode.now])?;
+        tx.execute(
+            "UPDATE characters SET revision=revision+1 WHERE id=?",
+            [character],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Dates and dependent memory disappear together, guarded against concurrent edits.
+    pub fn redate(
+        &mut self,
+        character: &str,
+        revision: i64,
+        episode: &Episode,
+        affected: &[Contribution],
+        pins: &[String],
+    ) -> Result<()> {
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current: i64 = tx.query_row(
+            "SELECT revision FROM characters WHERE id=?",
+            [character],
+            |row| row.get(0),
+        )?;
+        if current != revision {
+            return Err(Error::new(
+                "STALE_OPERATION",
+                "Chronology or memory changed after the preview. Preview again.",
+            ));
+        }
+        for item in affected {
+            tx.execute(
+                "DELETE FROM memories WHERE character_id=? AND episode_id=?",
+                params![character, item.episode_id],
+            )?;
+            tx.execute(
+                "DELETE FROM contributions WHERE character_id=? AND episode_id=?",
+                params![character, item.episode_id],
+            )?;
+            tx.execute("UPDATE episodes SET source_hash=NULL,input_hash=NULL,published_end=NULL WHERE character_id=? AND id=?", params![character, item.episode_id])?;
+        }
+        for id in pins {
+            tx.execute(
+                "DELETE FROM corrections WHERE character_id=? AND episode_id=?",
+                params![character, id],
+            )?;
+        }
+        tx.execute(
+            "UPDATE episodes SET start=?,now=?,time_offset=? WHERE character_id=? AND id=?",
+            params![
+                episode.start,
+                episode.now,
+                episode.time_offset,
+                character,
+                episode.id
+            ],
+        )?;
         tx.execute(
             "UPDATE characters SET revision=revision+1 WHERE id=?",
             [character],

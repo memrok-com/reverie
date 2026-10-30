@@ -23,7 +23,7 @@ Use these terms to discuss Reverie's behavior and its boundary with the RPG and 
 | Canon | The established fictional history. Reverie does not repair apparent inconsistencies in it. |
 | Play order | The order in which the player actually plays conversations. |
 | Canonical order | The order in which episodes take place inside the fiction. It can differ from play order. |
-| Canonical position | An episode's place in the fictional chronology, supplied before memory is injected for play. The first release uses a date or zoned ISO timestamp; relative placement can follow later. |
+| Canonical position | An episode's place in the fictional chronology, supplied before memory is injected for play. An explicit date or zoned ISO timestamp, entered directly or resolved once from an episode-relative date with a preview. |
 | Canonical interval | The span of fictional time occupied by an episode, including its time jumps. Episode intervals do not interleave. |
 | Current fictional point | Where the ongoing scene takes place within the episode's interval. Retrieval uses this point for chronological eligibility and temporal distance. |
 | Time jump | An advance in fictional time within an episode that stays in its chronological slot between surrounding episodes. The time control supplies a date or zoned ISO timestamp explicitly. |

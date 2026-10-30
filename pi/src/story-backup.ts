@@ -12,7 +12,7 @@ import { record } from './errors.js';
 type Row = Record<string, string | number | null>;
 interface SavedSource { episodeId: string; file: string; leaf: string | null; sha256: string; parentEpisodeId?: string }
 interface Story {
-  format: 'reverie-story'; version: 1; createdAt: string; character: Character;
+  format: 'reverie-story'; version: 1 | 2; createdAt: string; character: Character;
   roleplay: { enabled: boolean; model?: FolderModel }; sources: SavedSource[];
   native: { revision: number; episodes: Row[]; contributions: Row[]; memories: Row[]; corrections: Row[] };
   recalls: { episodeId: string; replyId: string; data: string }[];
@@ -24,9 +24,9 @@ const uuid = (value: unknown): value is string => typeof value === 'string' && /
 const tables = ['episodes', 'contributions', 'memories', 'corrections'] as const;
 function attach(catalog: Catalog): void {
   catalog.db.prepare('ATTACH DATABASE ? AS story_memory').run(catalog.memoryPath);
-  if (catalog.db.prepare('PRAGMA story_memory.user_version').get()?.user_version !== 2) {
+  if (catalog.db.prepare('PRAGMA story_memory.user_version').get()?.user_version !== 3) {
     catalog.db.exec('DETACH DATABASE story_memory');
-    throw new Error('This backup workflow needs memory database version 2. Start the installed Reverie engine first, or use a matching newer release.');
+    throw new Error('This backup workflow needs memory database version 3. Start the installed Reverie engine first, or use a matching newer release.');
   }
 }
 function rows(catalog: Catalog, table: typeof tables[number], character: string): Row[] {
@@ -93,7 +93,7 @@ export async function exportStory(catalog: Catalog, characterId: string, destina
     }
     // Detect replacement/deletion or non-append source edits during capture.
     for (const source of originals) if (!(await readFile(source.path)).equals(source.bytes)) throw new Error('Played source changed during backup. Finish the current turn and try again.');
-    const story: Story = { format: 'reverie-story', version: 1, createdAt: new Date().toISOString(), character,
+    const story: Story = { format: 'reverie-story', version: 2, createdAt: new Date().toISOString(), character,
       roleplay: { enabled: binding?.characterId === characterId ? binding.enabled : true, model }, sources, native, recalls };
     archive['story.json'] = Buffer.from(JSON.stringify(story));
     if (archive['story.json'].length > FILE_LIMIT) throw new Error('This story exceeds the 64 MiB manifest limit.');
@@ -123,7 +123,7 @@ function parseArchive(bytes: Uint8Array): { story: Story; files: Record<string, 
   const checksums: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(files['checksums.json']));
   if (!record(checksums) || checksums.storySha256 !== hash(files['story.json'])) throw new Error('The story manifest failed its integrity check.');
   const value: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(files['story.json']));
-  if (!record(value) || value.format !== 'reverie-story' || value.version !== 1) throw new Error('Unsupported story backup format. Use a compatible Reverie release.');
+  if (!record(value) || value.format !== 'reverie-story' || (value.version !== 1 && value.version !== 2)) throw new Error('Unsupported story backup format. Use a compatible Reverie release.');
   const story = value as unknown as Story;
   if (!record(story.character) || !uuid(story.character.id) || typeof story.character.name !== 'string' || !story.character.name.trim()
     || typeof story.character.persona !== 'string' || !story.character.persona.trim() || !record(story.roleplay) || typeof story.roleplay.enabled !== 'boolean'
@@ -157,7 +157,7 @@ function parseArchive(bytes: Uint8Array): { story: Story; files: Record<string, 
 }
 
 const columns = {
-  episodes: ['character_id', 'id', 'label', 'start', 'now', 'included', 'source_hash', 'input_hash', 'published_end'],
+  episodes: ['character_id', 'id', 'label', 'start', 'now', 'included', 'source_hash', 'input_hash', 'published_end', 'time_offset'],
   contributions: ['character_id', 'episode_id', 'start', 'end', 'input_hash', 'state_hash', 'data'],
   memories: ['character_id', 'episode_id', 'available_at', 'gist', 'detail', 'feeling', 'cues', 'salience', 'confidence', 'source_ids'],
   corrections: ['character_id', 'episode_id', 'data'],
@@ -177,6 +177,11 @@ function insertNative(db: DatabaseSync, prefix: string, story: Story): void {
       rows = [...rows].sort((a, b) => Number(a.id) - Number(b.id));
     }
     for (const row of rows) {
+      // Version-one story archives predating chronology shifts have no offset.
+      if (table === 'episodes') {
+        if (story.version === 1 && row.time_offset === undefined) row.time_offset = 0;
+        if (!Number.isSafeInteger(row.time_offset)) throw new Error('Invalid archived chronology offset.');
+      }
       if (!fields.every(field => row[field] === null || typeof row[field] === 'string' || (typeof row[field] === 'number' && Number.isFinite(row[field])))) throw new Error(`Invalid ${table} data in this backup.`);
       insert.run(...fields.map(field => row[field]!));
     }

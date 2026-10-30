@@ -59,6 +59,9 @@ pub struct Episode {
     pub label: String,
     pub start: i64,
     pub now: i64,
+    /// Cumulative shift from original Pi time entries. Branch identity stays unchanged.
+    #[serde(default)]
+    pub time_offset: i64,
     pub included: bool,
     pub source_hash: Option<String>,
     pub input_hash: Option<String>,

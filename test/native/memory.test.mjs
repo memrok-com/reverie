@@ -10,6 +10,100 @@ import { nativeEnginePath } from '../../scripts/lib/native-toolchain.mjs';
 
 const executable = nativeEnginePath('debug');
 
+test('re-dating previews and shifts a full interval, invalidates both chronologies, and rebuilds without future memory', async t => {
+  const f = fixture(t);
+  await f.episode('early', '2000-01-01', 'Early');
+  await f.episode('moving', '2010-01-01', 'Moving');
+  await f.request('when', { episodeId: 'moving', position: '2010-01-04' });
+  await f.episode('late', '2020-01-01', 'Late');
+  for (const id of ['early', 'moving', 'late']) await f.request('memorize', { episodeId: id });
+  const inspection = await f.request('inspect');
+  const late = inspection.episodes.find(item => item.episode.id === 'late');
+  const correction = await f.request('previewCorrection', { episodeId: 'late', revision: inspection.revision,
+    memoryIndex: 0, replacement: { ...late.contribution.memories[0], gist: 'Reviewed late memory.' } });
+  await f.request('applyCorrection', { token: correction.token });
+  const before = await f.request('status'), calls = f.calls.length;
+  const preview = await f.request('previewRedate', { episodeId: 'moving', revision: before.revision, position: '1990-01-01' });
+  assert.equal(preview.after.now, Date.UTC(1990, 0, 4));
+  assert.equal(preview.after.now - preview.after.start, 3 * 86400000);
+  assert.deepEqual(preview.affected.map(item => item.episodeId), ['early', 'moving', 'late']);
+  assert.deepEqual(preview.releasedPins, ['late']);
+  assert.deepEqual(preview.earlierBefore, ['early']);
+  assert.deepEqual(preview.earlierAfter, []);
+  assert.deepEqual(await f.request('status'), before, 'Preview has no durable effects.');
+  await f.request('applyRedate', { token: preview.token });
+  assert.equal(f.calls.length, calls);
+  assert.equal(f.contributions().length, 0);
+  assert.deepEqual((await f.request('retrieve', { episodeId: 'moving', at: '1990-01-04', cue: 'lantern' })).memories, []);
+  await assert.rejects(f.request('applyRedate', { token: preview.token }), { code: 'STALE_OPERATION' });
+  await f.restart();
+  const moved = (await f.request('status')).episodes[0];
+  assert.equal(moved.id, 'moving'); assert.equal(moved.start, Date.UTC(1990, 0, 1));
+  assert.equal(moved.time_offset, Date.UTC(1990, 0, 1) - Date.UTC(2010, 0, 1));
+  assert.ok((await f.request('status')).episodes.every(item => item.included));
+  await f.request('rebuild');
+  assert.deepEqual(f.contributions().map(item => item.episodeId), ['moving', 'early', 'late']);
+  assert.deepEqual((await f.request('retrieve', { episodeId: 'moving', at: '1990-01-04', cue: 'lantern' })).memories, []);
+});
+
+test('moving a scene later preserves earlier contributions and invalidates the old published dependency range', async t => {
+  const f = fixture(t);
+  for (const [id, date] of [['early', '2000-01-01'], ['moving', '2010-01-01'], ['middle', '2020-01-01']]) {
+    await f.episode(id, date); await f.request('memorize', { episodeId: id });
+  }
+  const earlier = f.contributions()[0];
+  // Direct date drift must not hide dependents from the old published position.
+  await f.request('when', { episodeId: 'moving', position: '2030-01-01', resetStart: true });
+  const state = await f.request('status');
+  const preview = await f.request('previewRedate', { episodeId: 'moving', revision: state.revision, position: '2040-01-01' });
+  assert.deepEqual(preview.affected.map(item => item.episodeId), ['moving', 'middle']);
+  const result = await f.request('applyRedate', { token: preview.token });
+  assert.equal(result.episode.input_hash, null);
+  assert.deepEqual(f.contributions(), [earlier]);
+  const calls = f.calls.length; await f.request('rebuild');
+  assert.equal(f.calls.length, calls + 2);
+  assert.deepEqual(f.contributions()[0], earlier);
+  assert.deepEqual(f.contributions().map(item => item.episodeId), ['early', 'middle', 'moving']);
+});
+
+test('re-date validates the furthest branch end without replacing the selected branch end', async t => {
+  const f = fixture(t);
+  await f.episode('moving', '2000-01-01', 'M');
+  await f.request('when', { episodeId: 'moving', position: '2000-01-10' });
+  await f.request('when', { episodeId: 'moving', position: '2000-01-02', branchSelection: true });
+  await f.episode('neighbour', '2000-02-01', 'N');
+  const before = await f.request('status'), revision = before.revision;
+  await assert.rejects(f.request('previewRedate', { episodeId: 'moving', revision, position: '2000-01-25', branchEnd: '2000-01-10' }),
+    error => error.code === 'INTERLEAVING_EPISODES' && /2000-02-03/.test(error.message) && /M/.test(error.message) && /N/.test(error.message));
+  assert.deepEqual(await f.request('status'), before);
+  const preview = await f.request('previewRedate', { episodeId: 'moving', revision, position: '2000-01-15', branchEnd: '2000-01-10' });
+  assert.equal(preview.branchEndBefore, Date.UTC(2000, 0, 10));
+  assert.equal(preview.branchEndAfter, Date.UTC(2000, 0, 24));
+  assert.equal(preview.after.now, Date.UTC(2000, 0, 16));
+  await f.request('applyRedate', { token: preview.token });
+  await f.request('when', { episodeId: 'moving', position: '2000-01-24', branchSelection: true });
+  assert.equal((await f.request('status')).episodes[0].now, Date.UTC(2000, 0, 24));
+  assert.equal(f.calls.length, 0);
+});
+
+test('re-date validates the end as well as start and rejects cross-character, stale and foreign preview tokens', async t => {
+  const f = fixture(t);
+  await f.episode('moving', '2000-01-01', 'Moving');
+  await f.request('when', { episodeId: 'moving', position: '2000-01-05' });
+  await f.episode('anchor', '2000-02-01', 'Anchor');
+  const before = await f.request('status');
+  await assert.rejects(f.request('previewRedate', { episodeId: 'moving', revision: before.revision, position: '2000-01-30' }),
+    error => error.code === 'INTERLEAVING_EPISODES' && /Moving/.test(error.message) && /Anchor/.test(error.message));
+  assert.deepEqual(await f.request('status'), before);
+  const preview = await f.request('previewRedate', { episodeId: 'moving', revision: before.revision, position: '2000-01-10' });
+  const other = fixture(t, { database: f.database, characterId: 'other' });
+  await assert.rejects(other.request('previewRedate', { episodeId: 'moving', revision: 0, position: '1999-01-01' }), { code: 'EPISODE_CHARACTER_MISMATCH' });
+  await assert.rejects(other.request('applyRedate', { token: preview.token }), { code: 'STALE_OPERATION' });
+  await f.episode('racing', '2000-01-20');
+  await assert.rejects(f.request('applyRedate', { token: preview.token }), { code: 'STALE_OPERATION' });
+  assert.equal((await f.request('status')).episodes[0].start, Date.UTC(2000, 0, 1));
+});
+
 function fixture(t, { infer = reflection, database = resolve('.work/native-tests', randomUUID() + '.sqlite'), characterId = 'mara', settings } = {}) {
   const sources = new Map();
   const calls = [];
@@ -46,6 +140,17 @@ function fixture(t, { infer = reflection, database = resolve('.work/native-tests
   t.after(async () => { for (const client of live) await client.close(); });
   return f;
 }
+
+test('version-two databases gain zero chronology offsets without resampling published memory', async t => {
+  const f = fixture(t); await f.episode('kept', '2000-01-01'); await f.request('memorize', { episodeId: 'kept' });
+  const contributions = f.contributions(); await f.close();
+  const db = new DatabaseSync(f.database);
+  try { db.exec('ALTER TABLE episodes DROP COLUMN time_offset; PRAGMA user_version=2;'); } finally { db.close(); }
+  f.client = f.open();
+  assert.equal((await f.request('status')).episodes[0].time_offset, 0);
+  assert.deepEqual(f.contributions(), contributions);
+  const calls = f.calls.length; await f.request('rebuild'); assert.equal(f.calls.length, calls);
+});
 
 test('native episode ownership protects placement, retrieval and source access across characters', async t => {
   const database = resolve('.work/native-tests', randomUUID() + '.sqlite');

@@ -87,6 +87,7 @@ pub struct Reverie {
     bridge: Arc<dyn Bridge>,
     operation: Arc<Mutex<Option<Operation>>>,
     correction_preview: Mutex<Option<Value>>,
+    redate_preview: Mutex<Option<Value>>,
 }
 
 fn required<'a>(value: &'a Value, key: &str) -> Result<&'a str> {
@@ -132,6 +133,7 @@ impl Reverie {
             bridge,
             operation: Arc::new(Mutex::new(None)),
             correction_preview: Mutex::new(None),
+            redate_preview: Mutex::new(None),
         })
     }
 
@@ -146,6 +148,8 @@ impl Reverie {
             "inspect" => self.inspect(&params),
             "previewCorrection" => self.preview_correction(&params),
             "applyCorrection" => self.apply_correction(&params),
+            "previewRedate" => self.preview_redate(&params),
+            "applyRedate" => self.apply_redate(&params),
             "forget" => {
                 let id = required(&params, "episodeId")?;
                 identifier(id, "Episode identity")?;
@@ -263,6 +267,7 @@ impl Reverie {
                 previous.as_ref().map(|item| item.start).unwrap_or(now)
             },
             now,
+            time_offset: previous.as_ref().map(|item| item.time_offset).unwrap_or(0),
             included: false,
             source_hash: None,
             input_hash: None,
@@ -287,6 +292,169 @@ impl Reverie {
         Ok(serde_json::to_value(
             store.episode(&self.character_id, episode_id)?,
         )?)
+    }
+
+    /// Keep the selected end while validating the full branch extent supplied by the host.
+    pub fn preview_redate(&self, params: &Value) -> Result<Value> {
+        let id = required(params, "episodeId")?;
+        identifier(id, "Episode identity")?;
+        let store = self.store.lock().unwrap();
+        store.assert_episode_owner(&self.character_id, id)?;
+        let before = store
+            .episode(&self.character_id, id)?
+            .ok_or_else(|| Error::new("EPISODE_NOT_FOUND", "That episode no longer exists."))?;
+        let revision = store.revision(&self.character_id)?;
+        if params.get("revision").and_then(Value::as_i64) != Some(revision) {
+            return Err(Error::new(
+                "STALE_OPERATION",
+                "Chronology changed. Open the episode and preview again.",
+            ));
+        }
+        let start = fictional_time(params.get("position").unwrap_or(&Value::Null))?;
+        let delta = start
+            .checked_sub(before.start)
+            .ok_or_else(|| Error::new("INVALID_TIME", "The date shift is too large."))?;
+        let branch_end_before = params
+            .get("branchEnd")
+            .map(fictional_time)
+            .transpose()?
+            .unwrap_or(before.now)
+            .max(before.now);
+        let branch_end_after = branch_end_before.checked_add(delta).ok_or_else(|| {
+            Error::new(
+                "INVALID_TIME",
+                "A shifted branch end is outside the supported calendar.",
+            )
+        })?;
+        fictional_time(&json!(branch_end_after))?;
+        crate::time::iso(branch_end_after)?;
+        let mut after = before.clone();
+        after.start = start;
+        after.now = before.now.checked_add(delta).ok_or_else(|| {
+            Error::new(
+                "INVALID_TIME",
+                "The shifted end is outside the supported calendar.",
+            )
+        })?;
+        after.time_offset = before
+            .time_offset
+            .checked_add(delta)
+            .ok_or_else(|| Error::new("INVALID_TIME", "The date shift is too large."))?;
+        if !(-9_007_199_254_740_991..=9_007_199_254_740_991).contains(&after.time_offset) {
+            return Err(Error::new(
+                "INVALID_TIME",
+                "The cumulative date shift is too large to preserve branch times exactly.",
+            ));
+        }
+        fictional_time(&json!(after.now))?;
+        crate::time::iso(after.start)?;
+        crate::time::iso(after.now)?;
+        let mut episodes = store.episodes(&self.character_id)?;
+        let earlier_before: Vec<_> = episodes
+            .iter()
+            .filter(|item| {
+                item.id != id
+                    && item.included
+                    && item.start < before.start
+                    && item.now <= before.start
+            })
+            .map(|item| item.id.clone())
+            .collect();
+        let earlier_after: Vec<_> = episodes
+            .iter()
+            .filter(|item| {
+                item.id != id
+                    && item.included
+                    && item.start < after.start
+                    && item.now <= after.start
+            })
+            .map(|item| item.id.clone())
+            .collect();
+        let target = episodes
+            .iter_mut()
+            .find(|item| item.id == id)
+            .ok_or_else(|| {
+                Error::new(
+                    "STALE_OPERATION",
+                    "The episode changed while preparing its dates. Preview again.",
+                )
+            })?;
+        *target = after.clone();
+        // Validate every translated branch without changing which one is selected.
+        target.now = branch_end_after;
+        assert_intervals(&episodes)?;
+        let contributions = store.contributions(&self.character_id)?;
+        let cutoff = contributions
+            .iter()
+            .find(|item| item.episode_id == id)
+            .map(|item| item.start)
+            .unwrap_or(before.start)
+            .min(before.start)
+            .min(start);
+        let affected: Vec<_> = contributions
+            .iter()
+            .filter(|item| {
+                delta != 0
+                    && (item.start >= cutoff
+                        || episodes.iter().any(|episode| {
+                            episode.id == item.episode_id && episode.start >= cutoff
+                        }))
+            })
+            .cloned()
+            .collect();
+        let released_pins: Vec<_> = store
+            .corrections(&self.character_id)?
+            .into_iter()
+            .filter(|pin| {
+                delta != 0
+                    && (affected
+                        .iter()
+                        .any(|item| item.episode_id == pin.episode_id)
+                        || episodes
+                            .iter()
+                            .any(|item| item.id == pin.episode_id && item.start >= cutoff))
+            })
+            .map(|pin| pin.episode_id)
+            .collect();
+        let preview = json!({"token":uuid::Uuid::new_v4().to_string(),"revision":revision,
+            "before":before,"after":after,"delta":delta,"affected":affected,"releasedPins":released_pins,
+            "earlierBefore":earlier_before,"earlierAfter":earlier_after,
+            "branchEndBefore":branch_end_before,"branchEndAfter":branch_end_after});
+        drop(store);
+        *self.redate_preview.lock().unwrap() = Some(preview.clone());
+        Ok(preview)
+    }
+
+    pub fn apply_redate(&self, params: &Value) -> Result<Value> {
+        let token = required(params, "token")?;
+        let mut slot = self.redate_preview.lock().unwrap();
+        let preview = slot
+            .as_ref()
+            .filter(|item| item["token"].as_str() == Some(token))
+            .ok_or_else(|| {
+                Error::new(
+                    "STALE_OPERATION",
+                    "The date preview expired. Preview again.",
+                )
+            })?
+            .clone();
+        let mut after: Episode = serde_json::from_value(preview["after"].clone())?;
+        let affected: Vec<Contribution> = serde_json::from_value(preview["affected"].clone())?;
+        let pins: Vec<String> = serde_json::from_value(preview["releasedPins"].clone())?;
+        self.store.lock().unwrap().redate(
+            &self.character_id,
+            preview["revision"].as_i64().unwrap(),
+            &after,
+            &affected,
+            &pins,
+        )?;
+        if affected.iter().any(|item| item.episode_id == after.id) {
+            after.source_hash = None;
+            after.input_hash = None;
+            after.published_end = None;
+        }
+        *slot = None;
+        Ok(json!({"episode":after,"invalidatedEpisodes":affected.len()}))
     }
 
     pub fn status(&self) -> Result<Value> {

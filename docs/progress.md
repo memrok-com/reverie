@@ -8,6 +8,8 @@ Issue #1 adds complete episode recollection browsing, separate impression snapsh
 
 The acceptance suite uses the real Pi SDK and native executable. The installed Pi terminal has also been exercised with a credential-free local OpenAI-compatible test endpoint. The release archive is checked after relocation and installation through Pi's package manager.
 
+Issue #3 extends the existing chronological episode browser and memory inspector with explicit gap placement, one-time relative dates, duplicate-anchor selection and a dedicated re-date preview/confirmation. Re-dating preserves source and branch identities while shifting branch time entries, invalidates affected derivatives and reviewed corrections atomically, and survives restart and backup. Controls are grouped under Ctrl+Alt+M. The new workflows have automated native and Pi SDK coverage.
+
 The earlier Node memory prototype, DSH adapter, browser configuration UI, DSH test runtimes, obsolete packaging scripts and superseded validation artifacts have been removed. Test-only golden reflection fixtures and the native build toolchain remain.
 
 See [validation](validation.md), [quickstart](quickstart.md), and [the migration acceptance plan](pi-migration-plan.md).

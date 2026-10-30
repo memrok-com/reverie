@@ -40,7 +40,7 @@ The aim is believable subjective memory for roleplay. The first mechanisms combi
 
 Play order and canonical order are independent. An episode may be played after another conversation while taking place years before it.
 
-Before character generation begins, the adapter needs an unambiguous canonical position for the episode. The first release uses Gregorian dates or zoned ISO timestamps through the time control; relative placement against labeled episodes can follow later. Relative ordering alone does not establish how many years have passed; duration needs additional temporal information.
+Before character generation begins, the adapter needs an unambiguous canonical position for the episode. Gregorian dates and zoned ISO timestamps supply it directly; relative placement against a labeled episode resolves once to an explicit date with a preview. Relative ordering alone does not establish how many years have passed; duration needs additional temporal information.
 
 An episode can include time jumps. Its full canonical interval, including those jumps, must fit between surrounding episodes. Episodes do not interleave: the memory layer does not need to weave individual turns from different conversations into one chronology. Retrieval uses the current fictional point within the episode, so the integration must keep that point current when time advances. The time control supplies explicit jumps; recognition of jumps in ordinary narration is a possible later convenience.
 
