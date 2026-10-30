@@ -29,7 +29,7 @@ async function fixture(t, existing) {
   let draft = '', replies = 0;
   const controls = { holdReflection: false, reflectionStarted: false, replyFailure: undefined, reflectionFailure: false, confirmDelete: true,
     holdInspectionDialog: false, dialogStarted: false, releaseDialog: undefined, releaseReflection: undefined,
-    onConfirm: undefined, lastConfirmation: undefined, reflect: reflection };
+    onConfirm: undefined, onSelect: undefined, lastConfirmation: undefined, reflect: reflection };
   const streamSimple = (_model, context, options) => {
     const stream = new AssistantMessageEventStream();
     queueMicrotask(() => {
@@ -83,7 +83,13 @@ async function fixture(t, existing) {
   const ui = { select: async (title, options) => {
       inspections.push(title); menus.push({ title, options });
       if (controls.holdInspectionDialog && title === 'Inspect episode memory') { controls.dialogStarted = true; return new Promise(resolve => { controls.releaseDialog = resolve; }); }
-      const answer = choices.shift(); if (answer === undefined) return options[0]; return typeof answer === 'number' ? options[answer] : answer;
+      const answer = choices.shift(), choice = answer === undefined ? options[0] : typeof answer === 'number' ? options[answer] : answer;
+      await controls.onSelect?.(title, options, choice);
+      if (title.startsWith('Re-date episode?') && choice === options[0]) {
+        controls.lastConfirmation = { title, message: title }; await controls.onConfirm?.();
+        return controls.confirmDelete ? choice : 'Cancel';
+      }
+      return choice;
     },
     custom: async factory => { const component = factory({ terminal: { rows: 200 }, requestRender() {} }, { fg: (_color, text) => text }, {}, () => {}); inspections.push(component.render(200).join('\n')); },
     input: async () => inputs.shift(), editor: async () => editors.shift(), confirm: async (title, message) => {
@@ -878,10 +884,13 @@ test('episode re-date preserves source and branch times through new jumps, repea
   const id = f.manager.getSessionId(), leaf = f.manager.getLeafId();
   const source = extractSource(f.manager.getBranch()), entries = structuredClone(f.manager.getEntries()), requests = f.requests.length;
   f.controls.confirmDelete = false; await f.command(`redate ${id} 2000-02-01`);
-  assert.match(f.inspections.at(-1), /After: 2000-02-01.*→ 2000-02-04/);
-  assert.match(f.inspections.at(-1), /Source continuity may need your attention/);
+  assert.match(f.inspections.at(-1), /The lighthouse\n2000-01-01 → 2000-02-01/);
+  assert.doesNotMatch(f.inspections.at(-1), /cost|refresh|correction|branch|continuity/i);
+  assert.ok(!f.inspections.some(text => text.includes('Episode re-date details')));
+  assert.deepEqual(f.menus.at(-1).options, ['Re-date', 'Cancel', 'View details']);
   assert.match(f.widgets.get('reverie')[0], /2000-01-04/);
   f.controls.confirmDelete = true; f.choices.push(0, 'Re-date episode'); f.inputs.push('2000-02-01'); await f.command('chats');
+  assert.equal(f.notices.at(-1).message, 'Episode re-dated.');
   assert.match(f.widgets.get('reverie')[0], /2000-02-04/);
   assert.equal(f.manager.getSessionId(), id); assert.equal(f.manager.getLeafId(), leaf);
   assert.deepEqual(f.manager.getEntries(), entries); assert.deepEqual(extractSource(f.manager.getBranch()), source);
@@ -935,9 +944,10 @@ test('active and saved episode re-dates check longer unselected branches and kee
   assert.match(f.notices.at(-1).message, /overlaps/);
   assert.equal(f.manager.getLeafId(), shortLeaf);
   assert.deepEqual(f.manager.getEntries(), entries);
-  await f.command(`redate ${moving} 2000-01-15T01:00Z`);
-  assert.match(f.inspections.at(-1), /All branches after: 2000-01-15T01:00:00.000Z → 2000-01-24T01:00:00.000Z/);
-  assert.match(f.inspections.at(-1), /14 days 1 hour/);
+  f.choices.push('View details', 'Re-date'); await f.command(`redate ${moving} 2000-01-15T01:00Z`);
+  const details = f.inspections.find(text => text.includes('Episode re-date details'));
+  assert.match(details, /All branches after: 2000-01-15T01:00:00.000Z → 2000-01-24T01:00:00.000Z/);
+  assert.match(details, /14 days 1 hour/);
   assert.match(f.widgets.get('reverie')[0], /2000-01-16T01:00/);
   assert.equal(f.manager.getLeafId(), shortLeaf);
   assert.deepEqual(extractSource(f.manager.getBranch()), selected);
@@ -962,9 +972,9 @@ test('corrected pre-play dates do not block active or saved episode re-dating th
   await f.runtime.newSession(); f.inputs.push('2010-01-01 N'); await f.session.prompt('Neighbour scene.');
   const requests = f.requests.length;
   // Saved source includes the abandoned 2020 setup entry, but its tip ends in 2000.
-  await f.command(`redate ${moving} 2000-01-02`);
+  f.choices.push('View details', 'Re-date'); await f.command(`redate ${moving} 2000-01-02`);
   assert.match(f.notices.at(-1).message, /Episode re-dated/);
-  assert.match(f.inspections.at(-1), /All branches after: 2000-01-02T00:00:00.000Z → 2000-01-04T00:00:00.000Z/);
+  assert.match(f.inspections.find(text => text.includes('Episode re-date details')), /All branches after: 2000-01-02T00:00:00.000Z → 2000-01-04T00:00:00.000Z/);
   f.choices.push(0, 'Resume'); await f.command('chats');
   assert.equal(f.manager.getLeafId(), leaf); assert.deepEqual(f.manager.getEntries(), originalEntries);
   await f.command(`redate ${moving} 2000-01-03`);
@@ -1057,25 +1067,125 @@ test('re-date rechecks selected branch time after confirmation even when native 
   assert.equal(f.errors.length, 0);
 });
 
-test('re-date preview lists dependent memories and corrections, cancels cleanly and rejects a concurrent change', async t => {
+test('compact re-date confirmation warns about corrections, offers details, rejects races and refreshes automatically', async t => {
   const f = await fixture(t); await f.setup();
   const early = await memorizeEpisode(f, '2000-01-01', 'Early');
   await memorizeEpisode(f, '2020-01-01', 'Later'); await correctCurrentMemory(f);
   const before = await memorySnapshot(f), requests = f.requests.length;
-  f.controls.confirmDelete = false; await f.command(`redate ${early} 2010-01-01`);
-  assert.match(f.inspections.at(-1), /Early.*recollections[\s\S]*Later.*impressions/);
-  assert.match(f.inspections.at(-1), /Release reviewed corrections.*Later/);
+  f.controls.confirmDelete = false; f.choices.push('View details'); await f.command(`redate ${early} 2010-01-01`);
+  const details = f.inspections.find(text => text.includes('Episode re-date details'));
+  assert.match(details, /Early.*recollections[\s\S]*Later.*impressions/);
+  assert.match(details, /Release reviewed corrections.*Later/);
+  assert.match(f.menus.at(-1).title, /up to 2 episodes.*costs/);
+  assert.match(f.menus.at(-1).title, /removes 1 reviewed correction/);
+  assert.deepEqual(f.menus.at(-1).options, ['Re-date and refresh memory', 'Cancel', 'View details']);
   assert.deepEqual(await memorySnapshot(f), before);
+  assert.equal(f.requests.length, requests);
   f.controls.confirmDelete = true;
   f.controls.onConfirm = async () => { f.controls.onConfirm = undefined; await legacyDate(f, randomUUID(), '2040-01-01', 'Racing edit'); };
   await f.command(`redate ${early} 2010-01-01`);
   assert.match(f.notices.at(-1).message, /changed after the preview/);
   assert.equal((await memorySnapshot(f)).episodes.find(item => item.episode.id === early).episode.start, Date.UTC(2000, 0, 1));
-  await f.command(`redate ${early} 2010-01-01`);
-  const after = await memorySnapshot(f);
-  assert.ok(after.episodes.filter(item => item.episode.included).every(item => item.state === 'invalidated' && !item.correction));
   assert.equal(f.requests.length, requests);
+  await f.command(`redate ${early} 2010-01-01`);
+  await f.until(() => f.notices.some(item => item.message === 'Episode re-dated. Memory updated.'));
+  const after = await memorySnapshot(f);
+  assert.ok(after.episodes.filter(item => item.episode.included).every(item => item.state === 'published' && !item.correction));
+  assert.equal(f.requests.length, requests + 2);
   assert.equal(f.errors.length, 0);
+});
+
+test('re-date refresh reuses earlier memory, leaves excluded episodes alone and skips a no-op', async t => {
+  const f = await fixture(t); await f.setup();
+  const early = await memorizeEpisode(f, '2000-01-01', 'Early');
+  const moving = await memorizeEpisode(f, '2010-01-01', 'Moving');
+  await f.runtime.newSession(); f.inputs.push('2030-01-01 Unmemorized'); await f.session.prompt('An unmemorized scene.');
+  const unmemorized = f.manager.getSessionId(), before = await memorySnapshot(f), requests = f.requests.length;
+  await f.command(`redate ${moving} 2015-01-01`);
+  await f.until(() => f.notices.some(item => item.message === 'Episode re-dated. Memory updated.'));
+  const after = await memorySnapshot(f);
+  assert.deepEqual(after.episodes.find(item => item.episode.id === early).contribution, before.episodes.find(item => item.episode.id === early).contribution);
+  assert.equal(after.episodes.find(item => item.episode.id === unmemorized).state, 'not-memorized');
+  assert.equal(after.episodes.find(item => item.episode.id === moving).state, 'published');
+  assert.equal(f.requests.length, requests + 1);
+  assert.match(f.menus.at(-1).title, /up to 1 episode\./);
+  assert.doesNotMatch(f.menus.at(-1).title, /correction/i);
+  const menus = f.menus.length;
+  await f.command(`redate ${moving} 2015-01-01`);
+  assert.equal(f.notices.at(-1).message, 'Episode date unchanged.');
+  assert.equal(f.menus.length, menus);
+  assert.deepEqual(await memorySnapshot(f), after);
+  assert.equal(f.requests.length, requests + 1);
+});
+
+test('re-date checks model availability and memory settings before changing dates', async t => {
+  const f = await fixture(t); await f.setup();
+  const moving = await memorizeEpisode(f, '2000-01-01', 'Moving');
+  const before = await memorySnapshot(f), requests = f.requests.length;
+  const catalog = new Catalog(f.home);
+  try {
+    catalog.setFolderModel(f.cwd, { provider: 'missing', modelId: 'gone' });
+    await f.command(`redate ${moving} 2010-01-01`);
+    assert.match(f.notices.at(-1).message, /unavailable/);
+    assert.deepEqual(await memorySnapshot(f), before);
+    catalog.setFolderModel(f.cwd, { provider: 'fixture', modelId: 'fixture' });
+    await f.command('off');
+    await f.command(`redate ${moving} 2010-01-01`);
+    assert.match(f.notices.at(-1).message, /Memory is off/);
+    assert.deepEqual(await memorySnapshot(f), before);
+    assert.equal(f.requests.length, requests);
+  } finally { catalog.close(); }
+});
+
+test('a failed re-date refresh offers a retry without applying the date change again', async t => {
+  const f = await fixture(t); await f.setup();
+  const moving = await memorizeEpisode(f, '2000-01-01', 'Moving');
+  const entries = structuredClone(f.manager.getEntries()), requests = f.requests.length;
+  f.controls.reflectionFailure = true;
+  f.choices.push('Re-date and refresh memory', 'Retry memory refresh');
+  let pending;
+  f.controls.onSelect = async (_title, _options, choice) => {
+    if (choice !== 'Retry memory refresh') return;
+    pending = await memorySnapshot(f);
+    f.controls.reflectionFailure = false;
+  };
+  await f.command(`redate ${moving} 2010-01-01`);
+  await f.until(() => f.notices.some(item => item.message === 'Episode re-dated. Memory updated.'));
+  assert.equal(pending.episodes[0].episode.start, Date.UTC(2010, 0, 1));
+  assert.equal(pending.episodes[0].state, 'invalidated');
+  assert.ok(f.notices.some(item => /date saved.*refresh failed.*pending/i.test(item.message)));
+  const after = await memorySnapshot(f);
+  assert.equal(after.episodes[0].episode.start, Date.UTC(2010, 0, 1));
+  assert.equal(after.episodes[0].episode.time_offset, pending.episodes[0].episode.time_offset);
+  assert.equal(after.episodes[0].state, 'published');
+  assert.equal(f.menus.filter(menu => menu.title.startsWith('Re-date episode?')).length, 1);
+  assert.equal(f.requests.length, requests + 2);
+  assert.deepEqual(f.manager.getEntries(), entries);
+  assert.equal(f.errors.length, 0);
+});
+
+test('re-date refresh shows progress, can be cancelled and keeps the new date pending across restart', async t => {
+  const f = await fixture(t); await f.setup();
+  const moving = await memorizeEpisode(f, '2000-01-01', 'Moving');
+  f.controls.holdReflection = true;
+  f.choices.push('Re-date and refresh memory', 'Later');
+  await f.command(`redate ${moving} 2010-01-01`);
+  await f.until(() => f.controls.reflectionStarted);
+  await f.until(() => f.widgets.get('reverie')?.[1].includes('Refreshing memory:'));
+  await f.command('cancel');
+  await f.until(() => f.menus.some(menu => menu.options.includes('Retry memory refresh')));
+  assert.ok(f.notices.some(item => /date saved.*refresh cancelled.*pending/i.test(item.message)));
+  assert.ok(!f.notices.some(item => item.message === 'Episode re-dated. Memory updated.'));
+  const after = await memorySnapshot(f);
+  assert.equal(after.episodes[0].episode.start, Date.UTC(2010, 0, 1));
+  assert.equal(after.episodes[0].state, 'invalidated');
+  const path = f.manager.getSessionFile(); await f.close();
+  const restarted = await fixture(t, { root: f.root, path });
+  assert.equal((await memorySnapshot(restarted)).episodes[0].episode.start, Date.UTC(2010, 0, 1));
+  await restarted.command('rebuild');
+  await restarted.until(() => restarted.notices.some(item => item.message.startsWith('Memory updated:')));
+  assert.equal((await memorySnapshot(restarted)).episodes[0].state, 'published');
+  assert.equal(f.errors.length + restarted.errors.length, 0);
 });
 
 test('episode history exposes full intervals and memory, and starts a scene in a gap without future recall', async t => {

@@ -14,7 +14,7 @@ import { MemoryService, executablePath } from './service.js';
 import { alternatives, branchOf, extractSource, ownerOf, readEntriesFile, sourceHash, textContent, type Entry } from './source.js';
 import type { Episode, Recall, MemoryInspection, InspectedEpisode, StoredMemory } from './contracts.js';
 import { episodeText, impressionsText, memoryText, sourcesText, stateLabel } from './memory-view.js';
-import { errorCode, errorMessage } from './errors.js';
+import { ReverieError, errorCode, errorMessage } from './errors.js';
 import { exportStory, restoreStory } from './story-backup.js';
 import { recallHistory } from './recall-history.js';
 import { anchorCandidates, branchTime, episodeBranchEnd, relativePlacement, resolveRelative, shiftText } from './chronology.js';
@@ -50,6 +50,7 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
   let draftFromShortcut: string | undefined, currentCharacterId: string | undefined;
   let restoringModel = false, modelIssue: string | undefined;
   let activeCommands = 0;
+  let cancelRedateRefresh: (() => void) | undefined;
   const dataHome = options.home ?? join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), '.pi', 'agent'), 'reverie');
   const keys: Record<Action, string> = { ...DEFAULT_KEYS };
   // Shortcuts must exist before Pi wires the editor. Read preferences without keeping factory resources open.
@@ -507,6 +508,7 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
   }
   async function redateEpisode(ctx: ExtensionCommandContext, character: Character, id?: string, input?: string): Promise<void> {
     if (!ctx.isIdle() || working) throw new Error('Finish or cancel the current operation before re-dating.');
+    if (!ctx.hasUI) throw new Error('Re-dating needs interactive Pi or an RPC client with dialogs.');
     const inspection = await inspectMemory(ctx, character);
     const target = id ? inspection.episodes.find(item => item.episode.id === id)
       : await chooseEpisode(ctx, inspection, 'Choose episode to re-date');
@@ -518,8 +520,21 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
     const client = service!.client(character.id);
     const branchEnd = await redateBranchEnd(ctx, character, target.episode);
     const preview = await client.request('previewRedate', { episodeId: target.episode.id, position: placement.position, revision: inspection.revision, branchEnd });
+    if (!preview.delta) { ctx.ui.notify('Episode date unchanged.', 'info'); return; }
     const label = (id: string) => inspection.episodes.find(item => item.episode.id === id)?.episode.label ?? id;
     const range = (item: Episode) => `${new Date(item.start).toISOString()} → ${new Date(item.now).toISOString()}`;
+    const affected = new Set(preview.affected.map(item => item.episodeId));
+    const included = inspection.episodes.filter(item => item.episode.included);
+    // Ordinary repair also picks up previously pending inputs and their dependents.
+    // Count that suffix so the confirmation does not understate model usage.
+    const firstRefresh = included.findIndex(item => affected.has(item.episode.id) || item.needsRebuild || item.state === 'stale');
+    const refreshCount = firstRefresh < 0 ? 0 : included.length - firstRefresh;
+    const applyLabel = refreshCount ? 'Re-date and refresh memory' : 'Re-date';
+    const date = (value: number) => new Date(value).toISOString().replace('T00:00:00.000Z', '').replace(':00.000Z', 'Z');
+    const summary = ['Re-date episode?', preview.before.label === preview.before.id ? character.name : preview.before.label,
+      `${date(preview.before.start)} → ${date(preview.after.start)}`,
+      ...(refreshCount ? [`Refresh memory for up to ${refreshCount} episode${refreshCount === 1 ? '' : 's'}. Model usage may incur costs.`] : []),
+      ...(preview.releasedPins.length ? [`This removes ${preview.releasedPins.length} reviewed correction${preview.releasedPins.length === 1 ? '' : 's'}.`] : [])].join('\n');
     const lines = [preview.before.label, `Before: ${range(preview.before)}`, `After: ${range(preview.after)}`,
       `All branches before: ${range({ ...preview.before, now: preview.branchEndBefore })}`,
       `All branches after: ${range({ ...preview.after, now: preview.branchEndAfter })}`,
@@ -532,17 +547,85 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
       ...preview.affected.map(item => `${label(item.episodeId)} [${item.episodeId}] · ${item.memories.length} recollections · ${item.impressions.length} impressions`),
       !preview.affected.length ? '(none)' : '',
       `Release reviewed corrections tied to the old chronology: ${preview.releasedPins.map(label).join(', ') || '(none)'}.`,
-      'Rebuild memory afterward to form contributions against the new chronology. This action makes no model calls.',
+      refreshCount ? 'After confirmation, affected and pending included memory refreshes automatically with the selected model. Unchanged contributions are reused; unmemorized episodes stay excluded.' : 'No memory refresh or model calls are needed.',
       'Dates mentioned in played dialogue are not rewritten. Source continuity may need your attention. Saved reply explanations describe their original context; invalidated references cannot supply character memory.'];
-    await show(ctx, 'Preview episode re-date', lines.filter(Boolean).join('\n\n'));
-    if (!await ctx.ui.confirm('Apply episode re-date?', `${preview.before.label}\n${range(preview.before)} → ${range(preview.after)}\nFurthest branch end after: ${new Date(preview.branchEndAfter).toISOString()}\nInvalidate ${preview.affected.length} contributions and release ${preview.releasedPins.length} reviewed corrections as previewed? Dialogue dates may need attention.`)) return;
-    if (!ctx.isIdle() || working || context?.sessionManager.getSessionId() !== ctx.sessionManager.getSessionId()
-      || selected(ctx, false)?.id !== character.id) throw new Error('The active chat changed. Open the re-date preview again.');
+    for (;;) {
+      const choice = await ctx.ui.select(summary, [applyLabel, 'Cancel', 'View details']);
+      if (choice === 'View details') { await show(ctx, 'Episode re-date details', lines.filter(Boolean).join('\n\n')); continue; }
+      if (choice !== applyLabel) return;
+      break;
+    }
+    const checkContext = () => {
+      if (!ctx.isIdle() || working || context?.sessionManager.getSessionId() !== ctx.sessionManager.getSessionId()
+        || catalog?.binding(ctx.cwd)?.characterId !== character.id) throw new Error('The active chat changed. Open the re-date preview again.');
+    };
+    checkContext();
+    const modelKey = refreshCount ? await redateModel(ctx) : undefined;
+    checkContext();
     if (await redateBranchEnd(ctx, character, target.episode) !== branchEnd) throw new Error('An episode branch date changed after the preview. Preview again.');
-    await client.request('applyRedate', { token: preview.token });
+    const result = await client.request('applyRedate', { token: preview.token });
     lastRecall = undefined;
-    await refresh(ctx);
-    ctx.ui.notify('Episode re-dated. Rebuild memory to refresh invalidated contributions. Check dates mentioned in dialogue for continuity.', 'info');
+    if (result.episode.id === ctx.sessionManager.getSessionId()) episode = result.episode;
+    if (modelKey) refreshRedatedMemory(ctx, character, modelKey);
+    else { await refresh(ctx); ctx.ui.notify('Episode re-dated.', 'info'); }
+  }
+  async function redateModel(ctx: ExtensionContext): Promise<string> {
+    if (!catalog!.binding(ctx.cwd)?.enabled) throw new Error('Memory is off. Enable it before re-dating an episode that needs memory refresh.');
+    await restoreFolderModel(ctx);
+    const modelKey = route(ctx);
+    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model!);
+    if (!auth.ok) throw new Error(`Memory refresh needs an available model. ${auth.error}`);
+    return modelKey;
+  }
+  function refreshRedatedMemory(ctx: ExtensionCommandContext, character: Character, modelKey: string): void {
+    const activeService = service!, client = activeService.client(character.id), sessionId = ctx.sessionManager.getSessionId();
+    const sameSession = () => service === activeService && context?.sessionManager.getSessionId() === sessionId
+      && catalog?.binding(ctx.cwd)?.characterId === character.id;
+    working = true;
+    status(ctx, 'Refreshing memory… · /reverie cancel to stop');
+    ctx.ui.notify('Episode re-dated. Refreshing memory…', 'info');
+    // Keep the command available for cancellation while model calls run.
+    void (async () => {
+      let retry = false;
+      for (;;) {
+        let failure: unknown, succeeded = false, polling = false, cancelled = false;
+        const cancel = () => { cancelled = true; };
+        cancelRedateRefresh = cancel;
+        const progress = setInterval(() => {
+          if (polling || !sameSession()) return;
+          polling = true;
+          void client.request('status').then(result => {
+            if (working && sameSession() && result.operation) status(ctx,
+              `Refreshing memory: ${result.operation.completed}/${result.operation.total} episodes · /reverie cancel to stop`);
+          }).catch(() => {}).finally(() => { polling = false; });
+        }, 500);
+        progress.unref();
+        try {
+          if (retry) modelKey = await redateModel(ctx);
+          if (cancelled) throw new ReverieError('CANCELLED', 'Memory refresh cancelled.');
+          if (!sameSession() || !ctx.isIdle() || !catalog!.binding(ctx.cwd)?.enabled) throw new Error('The active chat or memory settings changed.');
+          await client.request('rebuild', { modelKey, force: false });
+          succeeded = true;
+        } catch (error) { failure = error; }
+        finally {
+          clearInterval(progress);
+          if (cancelRedateRefresh === cancel) cancelRedateRefresh = undefined;
+          if (service === activeService) {
+            working = false;
+            try { if (context) await refresh(context); }
+            catch (error) { ctx.ui.notify(errorMessage(error), 'error'); }
+          }
+        }
+        if (succeeded) { ctx.ui.notify('Episode re-dated. Memory updated.', 'info'); return; }
+        cancelled = errorCode(failure) === 'CANCELLED';
+        ctx.ui.notify(`Episode date saved. Memory refresh ${cancelled ? 'cancelled' : 'failed'}; memory is pending. ${cancelled ? '' : errorMessage(failure)}`.trim(), cancelled ? 'info' : 'error');
+        if (!sameSession() || !ctx.isIdle() || working) return;
+        const choice = await ctx.ui.select('Date saved; memory refresh pending. Retry without changing the date again?', ['Retry memory refresh', 'Later']);
+        if (choice !== 'Retry memory refresh' || !sameSession() || !ctx.isIdle() || working) return;
+        working = true; retry = true;
+        status(ctx, 'Refreshing memory… · /reverie cancel to stop');
+      }
+    })().catch(error => ctx.ui.notify(errorMessage(error), 'error'));
   }
   async function inspectMemory(ctx: ExtensionCommandContext, character: Character): Promise<MemoryInspection> {
     remember(ctx); await service!.reconcile();
@@ -720,7 +803,11 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
     }
     if (action === 'reroll' || action === 'previous' || action === 'next') { await navigate(ctx, action); return; }
     if (action === 'memorize' || action === 'unmemorize' || action === 'rebuild' || action === 'regenerate') { await operate(ctx, action); return; }
-    if (action === 'cancel') { await service!.client(character.id).request('cancel'); ctx.ui.notify('Cancellation requested. Last published memory is retained.', 'info'); return; }
+    if (action === 'cancel') {
+      const redated = Boolean(cancelRedateRefresh); cancelRedateRefresh?.();
+      await service!.client(character.id).request('cancel');
+      ctx.ui.notify(redated ? 'Cancellation requested. The new date stays saved; memory refresh may remain pending.' : 'Cancellation requested. Last published memory is retained.', 'info'); return;
+    }
     if (action === 'delete') {
       await deleteChat(ctx, character, ctx.sessionManager.getSessionId()); return;
     }
