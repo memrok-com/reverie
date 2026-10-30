@@ -99,7 +99,13 @@ async function fixture(t, existing) {
     setEditorText: value => { draft = value; }, getEditorText: () => draft };
   const bind = session => session.bindExtensions({ uiContext: ui, mode: 'tui', onError: error => errors.push(error),
     commandContextActions: { waitForIdle: async () => until(() => session.isIdle), navigateTree: (id, opts) => session.navigateTree(id, opts), reload: () => session.reload(),
-      newSession: opts => runtime.newSession(opts), fork: (id, opts) => runtime.fork(id, opts), switchSession: (path, opts) => runtime.switchSession(path, opts) } });
+      newSession: async opts => {
+        if (controls.cancelNewSession) return { cancelled: true };
+        await controls.onNewSession?.();
+        const result = await runtime.newSession(opts);
+        if (controls.failAfterNewSession) throw new Error('Fixture new chat failure');
+        return result;
+      }, fork: (id, opts) => runtime.fork(id, opts), switchSession: (path, opts) => runtime.switchSession(path, opts) } });
   runtime.setRebindSession(bind); await bind(runtime.session);
   let closed = false;
   const close = async () => { if (!closed) { closed = true; await runtime.dispose(); } };
@@ -141,6 +147,82 @@ async function correctCurrentMemory(f) {
   f.choices.push('Correct a recollection', 0); f.editors.push('The player held the lantern.', 'A blue lantern.', 'I felt unsettled.');
   f.inputs.push(extractSource(f.manager.getBranch()).messages[0].id); await f.command('memory episode');
 }
+
+test('clear memory cancels without mutation and menu confirmation clears memory into a fresh chat without model calls', async t => {
+  const f = await fixture(t); await f.setup();
+  const oldId = await memorizeEpisode(f, '2000-01-01', 'First');
+  const path = f.manager.getSessionFile(), before = await memorySnapshot(f), calls = f.requests.length;
+  f.controls.confirmDelete = false;
+  await f.command('memory clear');
+  assert.deepEqual(await memorySnapshot(f), before);
+  assert.equal(f.manager.getSessionId(), oldId);
+  f.controls.confirmDelete = true; f.controls.cancelNewSession = true;
+  await f.command('memory clear');
+  assert.deepEqual(await memorySnapshot(f), before);
+  f.controls.cancelNewSession = false;
+  f.choices.push('Memory', 'Clear character memory'); await f.command('');
+  assert.notEqual(f.manager.getSessionId(), oldId);
+  assert.equal(extractSource(f.manager.getBranch()).messages.length, 0);
+  assert.equal(f.requests.length, calls);
+  await access(path);
+  const after = await memorySnapshot(f);
+  assert.equal(after.episodes[0].episode.included, false);
+  assert.equal(after.episodes[0].contribution, null);
+  assert.match(f.controls.lastConfirmation.message, /cannot be undone/);
+  assert.match(f.controls.lastConfirmation.message, /past reply explanations are kept/);
+  assert.match(f.notices.at(-1).message, /memory cleared.*New chat ready/);
+  f.inputs.push('2020-01-01 Fresh'); await f.session.prompt('Hello.');
+  const system = f.requests.at(-1).messages.find(item => item.role === 'system').content;
+  assert.match(system, /proud and wary/); assert.doesNotMatch(system, /Private character memory/);
+  assert.equal(f.errors.length, 0);
+});
+
+test('clear memory reports a completed clear when opening the chat fails, without requiring a repeated clear', async t => {
+  const f = await fixture(t); await f.setup(); await memorizeEpisode(f, '2000-01-01', 'First');
+  f.controls.failAfterNewSession = true; await f.command('memory clear');
+  assert.equal((await memorySnapshot(f)).episodes[0].contribution, null);
+  assert.match(f.notices.at(-1).message, /Memory cleared.*Use \/new.*do not need to clear memory again/);
+  assert.equal(f.errors.length, 0);
+});
+
+test('clear memory refuses a stale confirmation and can be retried after reviewing again', async t => {
+  const f = await fixture(t); await f.setup(); await memorizeEpisode(f, '2000-01-01', 'First');
+  const originalSession = f.manager.getSessionId();
+  f.controls.onConfirm = async () => withNativeMemory(f, client => client.request('when', { episodeId: 'other', position: '2010-01-01' }));
+  await f.command('memory clear');
+  assert.ok((await memorySnapshot(f)).episodes[0].contribution);
+  assert.match(f.notices.at(-1).message, /Memory changed/);
+  assert.equal(f.manager.getSessionId(), originalSession);
+  f.controls.onConfirm = undefined; await f.command('memory clear');
+  assert.ok((await memorySnapshot(f)).episodes.every(item => !item.contribution));
+  assert.equal(f.errors.length, 0);
+});
+
+test('clear memory explains recovery when memory changes during the new-chat transition', async t => {
+  const f = await fixture(t); await f.setup(); await memorizeEpisode(f, '2000-01-01', 'First');
+  const originalSession = f.manager.getSessionId(), originalPath = f.manager.getSessionFile();
+  f.controls.onNewSession = async () => withNativeMemory(f, client => client.request('when', { episodeId: 'other', position: '2010-01-01' }));
+  await f.command('memory clear');
+  assert.notEqual(f.manager.getSessionId(), originalSession);
+  assert.ok((await memorySnapshot(f)).episodes[0].contribution);
+  assert.match(f.notices.at(-1).message, /new chat was opened.*\/resume.*Memory changed/);
+  await access(originalPath);
+  f.controls.onNewSession = undefined; await f.command('memory clear');
+  assert.ok((await memorySnapshot(f)).episodes.every(item => !item.contribution));
+  assert.equal(f.errors.length, 0);
+});
+
+test('bare clear command does not open a destructive confirmation or change memory', async t => {
+  const f = await fixture(t); await f.setup(); await memorizeEpisode(f, '2000-01-01', 'First');
+  const before = await memorySnapshot(f), originalSession = f.manager.getSessionId();
+  f.controls.lastConfirmation = undefined;
+  await f.command('clear');
+  assert.equal(f.controls.lastConfirmation, undefined);
+  assert.equal(f.manager.getSessionId(), originalSession);
+  assert.deepEqual(await memorySnapshot(f), before);
+  assert.match(f.notices.at(-1).message, /Use \/reverie/);
+  assert.equal(f.errors.length, 0);
+});
 
 test('regeneration with no included episodes explains that memorization is needed without a confirmation or model call', async t => {
   const f = await fixture(t); await f.setup();

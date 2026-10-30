@@ -150,6 +150,28 @@ impl Reverie {
             "applyCorrection" => self.apply_correction(&params),
             "previewRedate" => self.preview_redate(&params),
             "applyRedate" => self.apply_redate(&params),
+            "clearMemory" => {
+                let revision = params
+                    .get("revision")
+                    .and_then(Value::as_i64)
+                    .ok_or_else(|| {
+                        Error::new(
+                            "INVALID_INPUT",
+                            "Memory revision must be supplied as an integer.",
+                        )
+                    })?;
+                // Revision validation and deletion are atomic. Workers already reflecting
+                // cannot publish their pre-clear snapshot, including in other processes.
+                let slot = self.operation.lock().unwrap();
+                self.store
+                    .lock()
+                    .unwrap()
+                    .clear_memory(&self.character_id, revision)?;
+                if let Some(operation) = slot.as_ref() {
+                    operation.cancel.cancel();
+                }
+                Ok(json!({"cleared":true}))
+            }
             "forget" => {
                 let id = required(&params, "episodeId")?;
                 identifier(id, "Episode identity")?;

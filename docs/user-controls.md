@@ -25,6 +25,7 @@ Run `/reverie` or Ctrl+Alt+M to open the menu, grouped into **Character**, **Epi
 | `/reverie rebuild` | Repair affected included episodes using their selected branches, preserving unchanged published contributions. |
 | `/reverie regenerate` | Preview and confirm **Regenerate with current model** for all included episodes, making new model calls while preserving reviewed recollections. |
 | `/reverie cancel` | Cancel the ongoing memory operation without replacing the last published memory. |
+| `/reverie memory clear` | Confirm clearing all of this character’s recollections, impressions, and corrections across linked folders, then start a new chat. Also available as **Memory → Clear character memory**. |
 | `/reverie backup [new-file.zip]` | Export this character's playable story, Pi sources, selected branches and memory in one versioned ZIP. |
 | `/reverie restore [file.zip]` | Restore into an unlinked folder, preserving identities and refusing existing-story collisions. |
 | `/reverie reroll` | Generate a reply to the latest user message, including retrying a failed or interrupted first generation. |
@@ -33,6 +34,8 @@ Run `/reverie` or Ctrl+Alt+M to open the menu, grouped into **Character**, **Epi
 | `/reverie delete` | Confirm deletion of this saved chat and its memory contribution. |
 
 Default shortcuts: Ctrl+Alt+R rerolls; Ctrl+Alt+Left/Right cycles; Ctrl+Alt+M opens the menu. They preserve an unsent text draft. Reroll requires an idle session and a user message; cycling also requires a saved character reply. If generation failed because of authentication or connection settings, correct those or select another model before retrying.
+
+Clearing memory is permanent and makes no model calls. Personality, saved chats, story dates, folder settings, and historical reply explanations are kept. All old episodes become unmemorized: rebuilding cannot restore them, but you can explicitly memorize a saved episode again. The new chat avoids carrying the current dialogue into the clean slate. Resuming an old chat still supplies that chat’s dialogue. Cancelling the confirmation or new-chat transition before clearing leaves memory unchanged. If memory changes while the confirmation is open, clearing stops before switching chats. If it changes during the switch itself, memory stays intact and the notice explains that a new chat opened; use `/resume` to return to the previous chat. If memory was cleared but opening the chat fails, use `/new`; clearing again is unnecessary.
 
 Before the first player message, you can correct the story date as often as needed, moving it earlier or later with `/reverie when` or **Episodes & dates → Story date**. Each correction replaces the episode's starting date. Once play begins, this control advances the selected branch's time. Use the dedicated **Re-date episode** workflow to move an existing played episode earlier or later. Dates must still fit a separate chronological slot from other episodes.
 

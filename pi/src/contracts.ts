@@ -21,6 +21,7 @@ export interface MemoryInspection { characterId: string; revision: number; at: n
 export interface CorrectionPreview { token: string; revision: number; episodeId: string; release: boolean; before: Contribution; after: Contribution; affected: Contribution[]; releasedPins: string[] }
 export interface RedatePreview { token: string; revision: number; before: Episode; after: Episode; delta: number; affected: Contribution[]; releasedPins: string[]; earlierBefore: string[]; earlierAfter: string[]; branchEndBefore: number; branchEndAfter: number }
 export interface EngineResults {
+  clearMemory: { cleared: boolean };
   ping: { version: string; characterId: string; protocol: number; runtime: string };
   when: Episode; status: MemoryStatus; retrieve: Recall; cancel: { cancelled: boolean };
   inspect: MemoryInspection; previewCorrection: CorrectionPreview;

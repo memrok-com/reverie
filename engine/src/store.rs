@@ -109,6 +109,38 @@ impl MemoryStore {
             .unwrap_or(0))
     }
 
+    /// Keep story dates and ownership, but exclude every episode from future rebuilds.
+    pub fn clear_memory(&mut self, character: &str, revision: i64) -> Result<()> {
+        self.ensure_character(character)?;
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current: i64 = tx.query_row(
+            "SELECT revision FROM characters WHERE id=?",
+            [character],
+            |row| row.get(0),
+        )?;
+        if current != revision {
+            return Err(Error::new(
+                "STALE_OPERATION",
+                "Memory changed. Review Clear memory again before continuing.",
+            ));
+        }
+        for table in ["memories", "contributions", "corrections"] {
+            tx.execute(
+                &format!("DELETE FROM {table} WHERE character_id=?"),
+                [character],
+            )?;
+        }
+        tx.execute("UPDATE episodes SET included=0,source_hash=NULL,input_hash=NULL,published_end=NULL WHERE character_id=?", [character])?;
+        tx.execute(
+            "UPDATE characters SET revision=revision+1 WHERE id=?",
+            [character],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn count(&self, id: &str) -> Result<i64> {
         Ok(self
             .db
