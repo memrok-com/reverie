@@ -382,6 +382,36 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
       }
     })();
   }
+  async function clearMemory(ctx: ExtensionCommandContext, character: Character): Promise<void> {
+    if (working || !ctx.isIdle()) throw new Error('Finish or cancel the current operation before clearing memory.');
+    const sessionId = ctx.sessionManager.getSessionId();
+    const { revision } = await service!.client(character.id).request('status');
+    if (!await ctx.ui.confirm(`Clear ${character.name}’s memory and start a new chat?`,
+      'Permanently remove all recollections, impressions, and reviewed corrections for this character, across all linked folders. Personality, saved chats, and story dates are kept. Old episodes stay unmemorized unless you explicitly memorize them again. A new chat gives the character a clean slate. This cannot be undone.')) return;
+    if (working || !ctx.isIdle() || ctx.sessionManager.getSessionId() !== sessionId || catalog!.binding(ctx.cwd)?.characterId !== character.id)
+      throw new Error('The chat or character changed. Open Clear memory again.');
+    remember(ctx);
+    let cleared = false;
+    let freshContext: ExtensionContext | undefined;
+    try {
+      const result = await ctx.newSession({ withSession: async fresh => {
+        freshContext = fresh;
+        const cleanupCatalog = new Catalog(dataHome);
+        const cleanup = new MemoryService(cleanupCatalog, options.executable ?? executablePath(resolve(dirname(fileURLToPath(import.meta.url)), '..')),
+          async () => { throw new Error('Clearing memory never calls a model.'); });
+        try {
+          await cleanup.client(character.id).request('clearMemory', { revision });
+          cleared = true;
+          fresh.ui.notify(`${character.name}’s memory cleared. New chat ready.`, 'info');
+        } finally { await cleanup.close(); cleanupCatalog.close(); }
+      } });
+      if (result.cancelled) (freshContext ?? ctx).ui.notify(cleared ? 'Memory cleared. Start a new chat with /new for a clean slate.' : 'Memory clearing cancelled. Memory is unchanged.', 'info');
+    } catch (error) {
+      if (cleared) freshContext!.ui.notify('Memory cleared, but the new chat could not finish opening. Use /new to retry; you do not need to clear memory again.', 'error');
+      else if (freshContext) freshContext.ui.notify(errorMessage(error), 'error');
+      else throw error;
+    }
+  }
   async function deleteChat(ctx: ExtensionCommandContext, character: Character, id: string): Promise<void> {
     if (working || !ctx.isIdle()) throw new Error('Finish or cancel the current operation before deleting a chat.');
     const current = id === ctx.sessionManager.getSessionId();
@@ -768,7 +798,7 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
       let choice = await ctx.ui.select('Reverie', choices);
       if (choice === 'Character') choice = await ctx.ui.select('Character', ['Personality', 'Model for this folder', 'Link character', 'Unlink character']);
       if (choice === 'Episodes & dates') choice = await ctx.ui.select('Episodes & dates', ['Episode chats', 'Story date', 'Re-date episode', 'Delete this chat']);
-      if (choice === 'Memory') choice = await ctx.ui.select('Memory', ['Memorize episode', 'Inspect memory', 'Explain last recall', 'Enable memory', 'Disable memory', 'Rebuild memory', 'Regenerate with current model', 'Cancel memory operation']);
+      if (choice === 'Memory') choice = await ctx.ui.select('Memory', ['Memorize episode', 'Inspect memory', 'Explain last recall', 'Enable memory', 'Disable memory', 'Rebuild memory', 'Regenerate with current model', 'Cancel memory operation', 'Clear character memory']);
       if (choice === 'Story backup') {
         const backupAction = await ctx.ui.select('Story backup', ['Export character story', 'Restore character backup']);
         if (backupAction) await command(backupAction === 'Export character story' ? 'backup' : 'restore', ctx); return;
@@ -779,7 +809,7 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
       actions['Episode chats'] = 'chats';
       actions['Re-date episode'] = 'redate';
       actions['Regenerate with current model'] = 'regenerate';
-      if (choice) await command(choice === 'Inspect memory' ? 'memory browse' : actions[choice]!, ctx); return;
+      if (choice) await command(choice === 'Clear character memory' ? 'memory clear' : choice === 'Inspect memory' ? 'memory browse' : actions[choice]!, ctx); return;
     }
     const character = selected(ctx)!;
     if (action === 'backup') {
@@ -799,6 +829,7 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
       return;
     }
     if (working && !['cancel', 'memory', 'explain'].includes(action)) throw new Error('Finish or cancel memory formation before changing character settings.');
+    if (action === 'clear' || (action === 'memory' && rest[0] === 'clear')) { await clearMemory(ctx, character); return; }
     if (action === 'chats') { await chats(ctx, character); return; }
     if (action === 'redate') { await redateEpisode(ctx, character, rest[0], rest.length > 1 ? rest.slice(1).join(' ') : undefined); return; }
     if (action === 'model') {
