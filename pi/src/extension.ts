@@ -256,6 +256,7 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
     if (!ownerOf(ctx.sessionManager.getEntries())) pi.appendEntry('reverie.binding', { characterId: character.id });
     pi.appendEntry('reverie.time', { now: episode.now, offset: episode.time_offset ?? 0 });
     if (resetStart && ctx.sessionManager.getSessionName() === previousTitle) pi.setSessionName(episodeTitle(episode, character.name));
+    remember(ctx);
     ctx.ui.notify(`Story date set: ${new Date(episode.now).toISOString()} · ${episode.label}`, 'info'); status(ctx); return true;
   }
   async function resolvePlacement(ctx: ExtensionContext, character: Character, raw: string): Promise<{ position: string | number; label?: string; explanation?: string } | undefined> {

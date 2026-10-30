@@ -50,6 +50,8 @@ Pi's grouped **Episodes & dates** controls reuse complete memory inspection and 
 
 Before preview and application, Pi also resolves the actual selected leaf's effective date (the active manager leaf or the catalog's saved source leaf) and compares it with the native episode's selected time. A mismatch blocks re-dating with guidance to select a valid branch. This covers interior superseded setup entries whose date restoration previously failed, without counting all abandoned setup dates as branch extents or altering tree navigation itself.
 
+For an already saved session, changing its story date immediately updates the catalog's selected leaf after appending the time entry. Another window can then re-date that episode without waiting for a reply or clean shutdown. Date-only sessions without a source file retain Pi's deferred save behavior; no transcript is forced into existence.
+
 Native schema version 3 adds a zero-default `time_offset` to episodes, preserving version-1/2 contributions during migration. The cumulative shift translates Pi's existing branch time entries without rewriting files or changing entry IDs/selected leaves. New time entries record their current offset; branch restoration subtracts that recorded offset before adding the episode's current shift. Input and continuation refresh native chronology so another window's date shift is observed before retrieval. Future inspection stays in transient player UI. Dialogue and saved reply explanations retain their original wording; native contribution validation prevents obsolete memory references from becoming current context. Backups preserve offsets and import older archives with a zero offset.
 
 ## Deletion

@@ -983,6 +983,31 @@ test('corrected pre-play dates do not block active or saved episode re-dating th
   assert.equal(f.errors.length + restarted.errors.length, 0);
 });
 
+test('date-only time jumps immediately publish the saved selection for re-dating in another live window', async t => {
+  const f = await fixture(t); await f.setup();
+  f.inputs.push('2000-01-01 Moving'); await f.session.prompt('We arrive.');
+  const moving = f.manager.getSessionId(), played = extractSource(f.manager.getBranch()), requests = f.requests.length;
+  await f.command('when 2000-01-03');
+  const leaf = f.manager.getLeafId(), path = f.manager.getSessionFile();
+  const catalog = new Catalog(f.home);
+  try {
+    assert.equal(catalog.source(moving).leaf, leaf, 'The new date selection is saved without another reply or shutdown.');
+    assert.deepEqual(extractSource(await readBranchFile(path, catalog.source(moving).leaf)), played);
+  } finally { catalog.close(); }
+  assert.equal(f.requests.length, requests);
+  const other = await fixture(t, { root: f.root });
+  await other.command(`redate ${moving} 2000-01-02`);
+  assert.match(other.notices.at(-1).message, /Episode re-dated/);
+  const moved = (await memorySnapshot(other)).episodes.find(item => item.episode.id === moving).episode;
+  assert.equal(moved.start, Date.UTC(2000, 0, 2)); assert.equal(moved.now, Date.UTC(2000, 0, 4));
+  assert.equal(other.requests.length, 0);
+  assert.equal(f.manager.getLeafId(), leaf);
+  assert.deepEqual(extractSource(f.manager.getBranch()), played);
+  await f.session.prompt('Continue after the other window moved the episode.');
+  assert.match(f.widgets.get('reverie')[0], /2000-01-04/);
+  assert.equal(f.errors.length + other.errors.length, 0);
+});
+
 for (const saved of [false, true]) test(`re-date refuses an unrestored interior setup date in ${saved ? 'saved' : 'active'} source before changing chronology`, async t => {
   const f = await fixture(t); await f.setup();
   await f.command('when 2020-01-01 Moving');
