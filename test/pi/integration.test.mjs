@@ -951,6 +951,38 @@ test('active and saved episode re-dates check longer unselected branches and kee
   assert.equal(f.errors.length + restarted.errors.length, 0);
 });
 
+test('corrected pre-play dates do not block active or saved episode re-dating through restart', async t => {
+  const f = await fixture(t); await f.setup();
+  await f.command('when 2020-01-01 M');
+  await f.command('when 2000-01-01');
+  await f.session.prompt('We meet on the corrected date.');
+  await f.command('when 2000-01-03'); await f.session.prompt('Two days later.');
+  const moving = f.manager.getSessionId(), selected = extractSource(f.manager.getBranch()), leaf = f.manager.getLeafId();
+  const originalEntries = structuredClone(f.manager.getEntries());
+  await f.runtime.newSession(); f.inputs.push('2010-01-01 N'); await f.session.prompt('Neighbour scene.');
+  const requests = f.requests.length;
+  // Saved source includes the abandoned 2020 setup entry, but its tip ends in 2000.
+  await f.command(`redate ${moving} 2000-01-02`);
+  assert.match(f.notices.at(-1).message, /Episode re-dated/);
+  assert.match(f.inspections.at(-1), /All branches after: 2000-01-02T00:00:00.000Z → 2000-01-04T00:00:00.000Z/);
+  f.choices.push(0, 'Resume'); await f.command('chats');
+  assert.equal(f.manager.getLeafId(), leaf); assert.deepEqual(f.manager.getEntries(), originalEntries);
+  await f.command(`redate ${moving} 2000-01-03`);
+  assert.match(f.notices.at(-1).message, /Episode re-dated/);
+  assert.match(f.widgets.get('reverie')[0], /2000-01-05/);
+  assert.deepEqual(extractSource(f.manager.getBranch()), selected);
+  assert.equal(f.requests.length, requests);
+  const path = f.manager.getSessionFile(); await f.close();
+  const restarted = await fixture(t, { root: f.root, path });
+  assert.match(restarted.widgets.get('reverie')[0], /2000-01-05/);
+  assert.equal(restarted.manager.getLeafId(), leaf);
+  assert.deepEqual(restarted.manager.getEntries(), originalEntries);
+  assert.deepEqual(extractSource(restarted.manager.getBranch()), selected);
+  await restarted.session.prompt('Continue on the moved date.');
+  assert.match(extractSource(restarted.manager.getBranch()).messages.at(-1).text, /Reply/);
+  assert.equal(f.errors.length + restarted.errors.length, 0);
+});
+
 test('re-date rechecks branch extent after confirmation even when native chronology has not changed', async t => {
   const f = await fixture(t); await f.setup();
   f.inputs.push('2000-01-01 Moving'); await f.session.prompt('We arrive.');

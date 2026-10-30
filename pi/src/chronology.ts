@@ -32,11 +32,29 @@ export function branchTime(branch: Entry[], episode: Episode): number | undefine
   return typeof time?.now === 'number' ? time.now - (time.offset ?? 0) + (episode.time_offset ?? 0) : undefined;
 }
 
-/** Every time entry can be restored by tree navigation, including unselected branches. */
+/** Branch extent uses the last effective time on each tip, not superseded setup dates. */
 export function episodeBranchEnd(entries: Entry[], episode: Episode): number {
   let end = episode.now;
-  for (const entry of entries) {
-    if (entry.type !== 'custom' || entry.customType !== 'reverie.time') continue;
+  const index = new Map(entries.map(entry => [entry.id, entry]));
+  const parents = new Set(entries.map(entry => entry.parentId));
+  const latestTime = new Map<string, Entry | undefined>();
+  for (const tip of entries.filter(entry => !parents.has(entry.id))) {
+    const path: Entry[] = [], seen = new Set<string>();
+    let id: string | null = tip.id;
+    while (id && !latestTime.has(id)) {
+      if (seen.has(id)) throw new Error('The saved conversation has a cyclic branch.');
+      seen.add(id);
+      const entry = index.get(id);
+      if (!entry) throw new Error('The saved conversation branch is incomplete.');
+      path.push(entry); id = entry.parentId;
+    }
+    let entry = id ? latestTime.get(id) : undefined;
+    // Cache shared prefixes so each session entry is visited only once.
+    for (const item of path.reverse()) {
+      if (item.type === 'custom' && item.customType === 'reverie.time') entry = item;
+      latestTime.set(item.id, entry);
+    }
+    if (!entry) continue;
     const time = entry.data as { now?: number; offset?: number } | undefined;
     const at = branchTime([entry], episode);
     if (!Number.isSafeInteger(time?.now) || (time?.offset !== undefined && !Number.isSafeInteger(time.offset))
@@ -45,6 +63,7 @@ export function episodeBranchEnd(entries: Entry[], episode: Episode): number {
     }
     end = Math.max(end, at!);
   }
+  if (latestTime.size !== entries.length) throw new Error('The saved conversation has an invalid or cyclic branch structure.');
   return end;
 }
 

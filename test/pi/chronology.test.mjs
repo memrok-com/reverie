@@ -23,12 +23,29 @@ test('branch time shifts compose for legacy and newly recorded time entries', ()
 });
 
 test('full episode extent translates every branch with its recorded offset and includes the selected end', () => {
-  const time = (now, offset) => ({ type: 'custom', customType: 'reverie.time', data: { now, ...(offset === undefined ? {} : { offset }) } });
-  const entries = [time(100), time(250, 50), time(175, 25)];
+  const time = (id, parentId, now, offset) => ({ id, parentId, type: 'custom', customType: 'reverie.time', data: { now, ...(offset === undefined ? {} : { offset }) } });
+  const entries = [time('root', null, 100), time('long', 'root', 250, 50), time('short', 'root', 175, 25)];
   assert.equal(episodeBranchEnd(entries, { now: 180, time_offset: 40 }), 240);
   assert.equal(episodeBranchEnd(entries, { now: 180, time_offset: -40 }), 180);
-  assert.throws(() => episodeBranchEnd([time('bad')], { now: 180 }), /invalid/);
-  assert.throws(() => episodeBranchEnd([time(100, Infinity)], { now: 180 }), /invalid/);
+  assert.throws(() => episodeBranchEnd([time('bad', null, 'bad')], { now: 180 }), /invalid/);
+  assert.throws(() => episodeBranchEnd([time('bad', null, 100, Infinity)], { now: 180 }), /invalid/);
+});
+
+test('branch extent ignores superseded setup dates while retaining each branch tip and its offset', () => {
+  const time = (id, parentId, now, offset = 0) => ({ id, parentId, type: 'custom', customType: 'reverie.time', data: { now, offset } });
+  const message = (id, parentId) => ({ id, parentId, type: 'message', message: { role: 'user', content: 'We meet.' } });
+  const entries = [time('abandoned', null, Date.UTC(2020, 0, 1)), time('corrected', 'abandoned', Date.UTC(2000, 0, 1)),
+    message('played', 'corrected'), time('long', 'played', Date.UTC(2000, 0, 10)), message('long-tip', 'long'),
+    time('short', 'played', Date.UTC(2000, 0, 3)), message('short-tip', 'short')];
+  const original = structuredClone(entries), episode = { now: Date.UTC(2000, 0, 3) };
+  assert.equal(episodeBranchEnd(entries, episode), Date.UTC(2000, 0, 10));
+  assert.equal(episodeBranchEnd([...entries].reverse(), { ...episode, time_offset: 86400000 }), Date.UTC(2000, 0, 11));
+  // A new time on the long branch supersedes that branch's former end only.
+  entries.push(time('long-corrected', 'long-tip', Date.UTC(2000, 0, 5), 86400000), message('new-tip', 'long-corrected'));
+  assert.equal(episodeBranchEnd(entries, { ...episode, time_offset: 86400000 }), Date.UTC(2000, 0, 5));
+  assert.deepEqual(entries.slice(0, original.length), original);
+  assert.throws(() => episodeBranchEnd([message('orphan', 'missing')], episode), /incomplete/);
+  assert.throws(() => episodeBranchEnd([message('a', 'b'), message('b', 'a')], episode), /invalid|cyclic/);
 });
 
 test('shift previews express sub-day changes as whole time units', () => {
