@@ -7,7 +7,7 @@ import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import { recoverStoryRestores } from './story-backup.js';
 import { record } from './errors.js';
 
-export interface Character { id: string; name: string; persona: string }
+export interface Character { id: string; name: string }
 export interface Binding { characterId: string; enabled: boolean }
 export interface FolderModel { provider: string; modelId: string; thinkingLevel?: ThinkingLevel }
 export interface SourceRecord { episodeId: string; characterId: string; path: string; cwd: string; leaf: string | null; deleted: number }
@@ -56,7 +56,7 @@ export class Catalog {
     mkdirSync(directory, { recursive: true }); this.memoryPath = join(directory, 'memory.sqlite');
     this.db = new DatabaseSync(join(directory, 'catalog.sqlite'));
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
-      CREATE TABLE IF NOT EXISTS characters(id TEXT PRIMARY KEY,name TEXT NOT NULL,persona TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS characters(id TEXT PRIMARY KEY,name TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS folders(cwd TEXT PRIMARY KEY,characterId TEXT NOT NULL,enabled INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS sources(episodeId TEXT PRIMARY KEY,characterId TEXT NOT NULL,path TEXT NOT NULL,cwd TEXT NOT NULL,leaf TEXT,deleted INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS preferences(key TEXT PRIMARY KEY,value TEXT NOT NULL);`);
@@ -70,14 +70,10 @@ export class Catalog {
   }
   characters(): Character[] { return this.db.prepare('SELECT * FROM characters ORDER BY name,id').all() as unknown as Character[]; }
   character(id: string): Character | undefined { return this.db.prepare('SELECT * FROM characters WHERE id=?').get(id) as unknown as Character | undefined; }
-  create(name: string, persona: string): Character {
-    if (!name.trim() || name.length > 100 || !persona.trim()) throw new Error('A character needs a name and personality.');
-    const character = { id: randomUUID(), name: name.trim(), persona };
-    this.db.prepare('INSERT INTO characters VALUES(?,?,?)').run(character.id, character.name, persona); return character;
-  }
-  setPersona(id: string, persona: string): void {
-    if (!persona.trim() || persona.length > 100_000) throw new Error('Enter a personality of at most 100,000 characters.');
-    this.db.prepare('UPDATE characters SET persona=? WHERE id=?').run(persona, id);
+  create(name: string): Character {
+    if (!name.trim() || name.length > 100) throw new Error('A character needs a name of at most 100 characters.');
+    const character = { id: randomUUID(), name: name.trim() };
+    this.db.prepare('INSERT INTO characters(id,name) VALUES(?,?)').run(character.id, character.name); return character;
   }
   binding(cwd: string): Binding | undefined {
     const row = this.db.prepare('SELECT characterId,enabled FROM folders WHERE cwd=?').get(directoryKey(cwd));

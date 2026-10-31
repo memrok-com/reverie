@@ -15,7 +15,7 @@ import { reflection } from '../test/fixtures/subjective.mjs';
 const root = resolve('.work/pi-wire', randomUUID()), cwd = join(root, 'Mara'), agentDir = join(root, 'agent');
 await mkdir(cwd, { recursive: true }); await mkdir(agentDir, { recursive: true });
 const home = join(agentDir, 'reverie'), catalog = new Catalog(home);
-const character = catalog.create('Mara', 'You are Mara, proud and wary.'); catalog.bind(cwd, character.id); catalog.close();
+const character = catalog.create('Mara'); await writeFile(join(cwd, 'CHARACTER.md'), 'You are Mara, proud and wary.'); catalog.bind(cwd, character.id); catalog.close();
 const chatRequests = [];
 const server = createServer(async (req, res) => {
   try {

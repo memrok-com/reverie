@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID, createHash } from 'node:crypto';
-import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { link, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
@@ -19,7 +19,8 @@ const executable = nativeEnginePath(), hash = bytes => createHash('sha256').upda
 async function fixture(t, { duplicateMemories = false } = {}) {
   const root = resolve('.work/backup-tests', randomUUID()), cwd = join(root, 'original-folder');
   await mkdir(cwd, { recursive: true });
-  const catalog = new Catalog(join(root, 'original-data')), character = catalog.create('Mara', 'You are Mara, proud and wary.');
+  const catalog = new Catalog(join(root, 'original-data')), character = catalog.create('Mara');
+  await writeFile(join(cwd, 'CHARACTER.md'), 'You are Mara, proud and wary.');
   catalog.bind(cwd, character.id); catalog.setFolderModel(cwd, { provider: 'unavailable', modelId: 'local-roleplay', thinkingLevel: 'high' });
   const service = new MemoryService(catalog, executable, async request => {
     const result = reflection(request);
@@ -33,7 +34,7 @@ async function fixture(t, { duplicateMemories = false } = {}) {
   const episode = async (label, date, alternatives = false) => {
     const manager = SessionManager.create(cwd, join(cwd, 'sessions'));
     manager.appendCustomEntry('reverie.binding', { characterId: character.id });
-    manager.appendCustomEntry('reverie.foundation', { text: character.persona });
+    manager.appendCustomEntry('reverie.foundation', { text: await readFile(join(cwd, 'CHARACTER.md'), 'utf8') });
     const user = manager.appendMessage({ role: 'user', content: 'I offer a blue lantern.', timestamp: 1 });
     const selected = manager.appendMessage({ role: 'assistant', content: [{ type: 'text', text: 'SELECTED: I accept.' }], stopReason: 'stop' });
     if (alternatives) {
@@ -80,7 +81,9 @@ test('story ZIP round trip relocates Pi source, preserves selected branches, cor
   await writeFile(join(f.root, 'auth.json'), '{"apiKey":"PROVIDER_SECRET_MUST_NOT_EXPORT"}');
   await exportStory(f.catalog, f.character.id, f.archive, f.cwd);
   const zip = unzipSync(await readFile(f.archive)), story = JSON.parse(Buffer.from(zip['story.json']).toString());
-  assert.equal(story.version, 2); assert.equal(story.sources.length, 3);
+  assert.equal(story.version, 3); assert.equal(story.sources.length, 3);
+  assert.equal(story.character.persona, undefined);
+  assert.equal(story.roleplay.persona, 'You are Mara, proud and wary.');
   assert.doesNotMatch(JSON.stringify(story), /PROVIDER_SECRET_MUST_NOT_EXPORT/);
   assert.ok(!Object.keys(zip).some(name => /auth|credentials/.test(name)));
   for (const source of story.sources) assert.equal(JSON.parse(Buffer.from(zip[source.file]).toString().split('\n')[0]).cwd, '.');
@@ -90,8 +93,9 @@ test('story ZIP round trip relocates Pi source, preserves selected branches, cor
   assert.ok(resolve(f.cwd).startsWith(resolve('.work/backup-tests') + '\\') || resolve(f.cwd).startsWith(resolve('.work/backup-tests') + '/'));
   await rm(f.cwd, { recursive: true });
   const d = await destination(t, f.root);
-  const other = d.catalog.create('Other story', 'You are another character.');
+  const other = d.catalog.create('Other story');
   const restored = await restoreStory(d.catalog, f.archive, d.cwd, executable);
+  assert.equal(await readFile(join(d.cwd, 'CHARACTER.md'), 'utf8'), story.roleplay.persona);
   assert.deepEqual(restored, f.character); assert.deepEqual({ ...d.catalog.character(other.id) }, other);
   assert.deepEqual(d.catalog.binding(d.cwd), { characterId: restored.id, enabled: false });
   assert.deepEqual(d.catalog.folderModel(d.cwd), { provider: 'unavailable', modelId: 'local-roleplay', thinkingLevel: 'high' });
@@ -121,7 +125,7 @@ test('story ZIP round trip relocates Pi source, preserves selected branches, cor
   await assert.rejects(readFile(marker), { code: 'ENOENT' });
 });
 
-test('backup preserves chronology shifts and branch metadata, and legacy archives restore with zero offset', async t => {
+test('backup preserves chronology shifts and branch metadata', async t => {
   const f = await fixture(t), manager = f.managers.at(-1);
   // Record a legacy Pi time entry, retaining the selected reply and its source IDs.
   manager.appendCustomEntry('reverie.time', { now: Date.UTC(2030, 0, 1) });
@@ -137,16 +141,6 @@ test('backup preserves chronology shifts and branch metadata, and legacy archive
   assert.equal(branchTime(branch, moved), Date.UTC(2040, 0, 1));
   assert.deepEqual(extractSource(branch), extractSource(manager.getBranch()));
 
-  const old = await fixture(t), legacyDestination = await destination(t, old.root);
-  await exportStory(old.catalog, old.character.id, old.archive, old.cwd);
-  const files = unzipSync(await readFile(old.archive)), story = JSON.parse(Buffer.from(files['story.json']).toString());
-  story.version = 1;
-  for (const episode of story.native.episodes) delete episode.time_offset;
-  files['story.json'] = Buffer.from(JSON.stringify(story));
-  files['checksums.json'] = Buffer.from(JSON.stringify({ storySha256: hash(files['story.json']) }));
-  const legacyArchive = join(old.root, 'legacy.zip'); await writeFile(legacyArchive, zipSync(files));
-  await restoreStory(legacyDestination.catalog, legacyArchive, legacyDestination.cwd, executable);
-  assert.ok((await legacyDestination.service.client(old.character.id).request('status')).episodes.every(item => item.time_offset === 0));
 });
 
 test('restore preserves duplicate-prose memory indices when archived rows are reordered', async t => {
@@ -208,9 +202,35 @@ test('restore rolls back both databases and removes staged files when publicatio
   await assert.rejects(restoreStory(d.catalog, f.archive, d.cwd, executable), /simulated publication failure/);
   assert.deepEqual(d.catalog.characters(), []); assert.deepEqual(d.catalog.sources(), []);
   assert.deepEqual(await readdir(join(d.home, 'restored')), []);
+  await assert.rejects(readFile(join(d.cwd, 'CHARACTER.md')), { code: 'ENOENT' });
+  assert.deepEqual(await readdir(d.cwd), []);
   assert.ok(!(await readdir(d.home)).some(name => /^restore-.*\.json$/.test(name)));
   const db = new DatabaseSync(d.catalog.memoryPath);
   try { assert.equal(db.prepare('SELECT COUNT(*) AS n FROM characters').get().n, 0); } finally { db.close(); }
+});
+
+test('backup captures the exporting folder prompt, including edits that have not been played', async t => {
+  const f = await fixture(t);
+  const other = join(f.root, 'another-stage'); await mkdir(other);
+  f.catalog.bind(other, f.character.id);
+  await writeFile(join(other, 'CHARACTER.md'), 'You are Mara in later life.');
+  await exportStory(f.catalog, f.character.id, f.archive, other);
+  const files = unzipSync(await readFile(f.archive)), story = JSON.parse(Buffer.from(files['story.json']).toString());
+  assert.equal(story.roleplay.persona, 'You are Mara in later life.');
+  assert.equal(await readFile(join(f.cwd, 'CHARACTER.md'), 'utf8'), 'You are Mara, proud and wary.');
+  const d = await destination(t, f.root); await restoreStory(d.catalog, f.archive, d.cwd, executable);
+  assert.equal(await readFile(join(d.cwd, 'CHARACTER.md'), 'utf8'), 'You are Mara in later life.');
+  assert.equal((await readSourceFile(d.catalog.source(f.first).path, d.catalog.source(f.first).leaf)).foundation, 'You are Mara, proud and wary.');
+});
+
+test('restore refuses an existing prompt and can retry after choosing an empty destination', async t => {
+  const f = await fixture(t); await exportStory(f.catalog, f.character.id, f.archive, f.cwd);
+  const d = await destination(t, f.root), path = join(d.cwd, 'CHARACTER.md');
+  await writeFile(path, 'An unrelated character.');
+  await assert.rejects(restoreStory(d.catalog, f.archive, d.cwd, executable), /already contains CHARACTER.md/);
+  assert.equal(await readFile(path, 'utf8'), 'An unrelated character.'); assert.equal(d.catalog.characters().length, 0);
+  await rm(path); await restoreStory(d.catalog, f.archive, d.cwd, executable);
+  assert.equal(await readFile(path, 'utf8'), 'You are Mara, proud and wary.');
 });
 
 test('a live restore journal is never overwritten or removed by a second import', async t => {
@@ -247,13 +267,41 @@ test('startup recovers an interrupted restore even if its recorded PID is now al
   } finally { recovered.close(); }
 });
 
+for (const edit of ['untouched', 'in-place', 'replacement']) {
+  test(`interrupted restore cleans its prompt safely after ${edit} editing`, async t => {
+    const f = await fixture(t), home = join(f.root, 'recover-prompt-data'), cwd = join(f.root, 'recover-prompt-folder');
+    await mkdir(cwd);
+    const catalog = new Catalog(home), service = new MemoryService(catalog, executable, async () => { throw new Error('No model'); });
+    await service.client(f.character.id).request('ping'); await service.close();
+    const directory = randomUUID(), staged = join(cwd, `.${directory}.character.tmp`), path = join(cwd, 'CHARACTER.md');
+    const prompt = 'The restored personality.', edited = 'A personality edited outside Pi.';
+    await mkdir(join(home, 'restored', directory), { recursive: true });
+    await writeFile(staged, prompt); await link(staged, path);
+    if (edit === 'in-place') await writeFile(path, edited);
+    if (edit === 'replacement') {
+      const replacement = join(cwd, 'replacement.tmp'); await writeFile(replacement, edited); await rename(replacement, path);
+    }
+    await writeFile(join(home, `restore-${f.character.id}.json`), JSON.stringify({ characterId: f.character.id, directory, cwd, pid: process.pid,
+      promptHash: hash(Buffer.from(prompt)) }));
+    catalog.close();
+    const recovered = new Catalog(home);
+    try {
+      assert.equal(recovered.characters().length, 0);
+      if (edit === 'untouched') await assert.rejects(readFile(path), { code: 'ENOENT' });
+      else assert.equal(await readFile(path, 'utf8'), edited);
+      await assert.rejects(readFile(staged), { code: 'ENOENT' });
+      assert.ok(!(await readdir(home)).some(name => /^restore-.*\.json$/.test(name)));
+    } finally { recovered.close(); }
+  });
+}
+
 test('startup discards empty or truncated pre-commit journals without blocking ordinary catalog use', async () => {
   const home = resolve('.work/backup-tests', randomUUID(), 'data');
-  const first = new Catalog(home), character = first.create('Existing', 'Preserve this story.'); first.close();
+  const first = new Catalog(home), character = first.create('Existing'); first.close();
   for (const partial of ['', '{', '{"characterId":']) await writeFile(join(home, `restore-${randomUUID()}.json`), partial);
   const recovered = new Catalog(home);
   try {
-    assert.equal(recovered.character(character.id).persona, character.persona);
+    assert.deepEqual({ ...recovered.character(character.id) }, character);
     assert.ok(!(await readdir(home)).some(name => /^restore-.*\.json$/.test(name)));
   } finally { recovered.close(); }
 });

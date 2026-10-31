@@ -63,6 +63,19 @@ export function ownerOf(entries: Entry[]): string | undefined {
 }
 export interface Alternatives { user: Entry; replies: Entry[]; current: number }
 export function alternatives(entries: Entry[], branch: Entry[]): Alternatives | undefined {
+  const index = new Map(entries.map(entry => [entry.id, entry]));
+  // The request's foundation snapshot can sit between the played prompt and reply.
+  function promptParent(entry: Entry): string | null {
+    let parent = entry.parentId;
+    const seen = new Set<string>();
+    while (parent && !seen.has(parent)) {
+      seen.add(parent);
+      const metadata = index.get(parent);
+      if (metadata?.type !== 'custom' || metadata.customType !== 'reverie.foundation') break;
+      parent = metadata.parentId;
+    }
+    return parent;
+  }
   const edits = new Map(branch.filter(entry => entry.type === 'context_edit').map(entry => [entry.targetId, entry.replacement]));
   const original = branch.findLast(entry => entry.type === 'message' && entry.message?.role === 'user' && edits.get(entry.id) !== null);
   if (!original) return;
@@ -71,7 +84,7 @@ export function alternatives(entries: Entry[], branch: Entry[]): Alternatives | 
   const prompts = new Set(entries.filter(entry => entry.type === 'message' && entry.message?.role === 'user'
     && entry.parentId === user.parentId && JSON.stringify(entry.message.content) === identity).map(entry => entry.id));
   const replies = entries.filter(entry => entry.type === 'message' && entry.message?.role === 'assistant'
-    && prompts.has(entry.parentId ?? '') && !['error', 'aborted', 'toolUse'].includes(entry.message.stopReason ?? '')
+    && prompts.has(promptParent(entry) ?? '') && !['error', 'aborted', 'toolUse'].includes(entry.message.stopReason ?? '')
     && textContent(entry.message.content).trim());
   const ids = new Set(branch.map(entry => entry.id));
   return { user, replies, current: replies.findIndex(entry => ids.has(entry.id)) };

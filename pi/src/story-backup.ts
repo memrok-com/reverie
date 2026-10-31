@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { readdirSync, readFileSync, realpathSync, rmSync, unlinkSync } from 'node:fs';
+import { linkSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync } from 'node:fs';
 import { mkdir, open, readFile, rm } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -8,12 +8,13 @@ import type { Catalog, Character, FolderModel } from './catalog.js';
 import { MemoryClient } from './memory-client.js';
 import { branchOf, extractSource, ownerOf, readSourceFile } from './source.js';
 import { record } from './errors.js';
+import { personaPath, readPersona, validatePersona } from './persona.js';
 
 type Row = Record<string, string | number | null>;
 interface SavedSource { episodeId: string; file: string; leaf: string | null; sha256: string; parentEpisodeId?: string }
 interface Story {
-  format: 'reverie-story'; version: 1 | 2; createdAt: string; character: Character;
-  roleplay: { enabled: boolean; model?: FolderModel }; sources: SavedSource[];
+  format: 'reverie-story'; version: 3; createdAt: string; character: Character;
+  roleplay: { persona: string; enabled: boolean; model?: FolderModel }; sources: SavedSource[];
   native: { revision: number; episodes: Row[]; contributions: Row[]; memories: Row[]; corrections: Row[] };
   recalls: { episodeId: string; replyId: string; data: string }[];
 }
@@ -61,6 +62,7 @@ function captureStory(catalog: Catalog, characterId: string, cwd: string) {
 
 /** Snapshot metadata briefly, read source without write locks, then recheck the complete snapshot. */
 export async function exportStory(catalog: Catalog, characterId: string, destination: string, cwd: string, current?: CurrentSession): Promise<void> {
+  const persona = readPersona(cwd);
   attach(catalog);
   let locked = false;
   const archive: Record<string, Uint8Array> = {};
@@ -93,8 +95,8 @@ export async function exportStory(catalog: Catalog, characterId: string, destina
     }
     // Detect replacement/deletion or non-append source edits during capture.
     for (const source of originals) if (!(await readFile(source.path)).equals(source.bytes)) throw new Error('Played source changed during backup. Finish the current turn and try again.');
-    const story: Story = { format: 'reverie-story', version: 2, createdAt: new Date().toISOString(), character,
-      roleplay: { enabled: binding?.characterId === characterId ? binding.enabled : true, model }, sources, native, recalls };
+    const story: Story = { format: 'reverie-story', version: 3, createdAt: new Date().toISOString(), character,
+      roleplay: { persona, enabled: binding?.characterId === characterId ? binding.enabled : true, model }, sources, native, recalls };
     archive['story.json'] = Buffer.from(JSON.stringify(story));
     if (archive['story.json'].length > FILE_LIMIT) throw new Error('This story exceeds the 64 MiB manifest limit.');
     archive['checksums.json'] = Buffer.from(JSON.stringify({ storySha256: hash(archive['story.json']) }));
@@ -102,6 +104,7 @@ export async function exportStory(catalog: Catalog, characterId: string, destina
     catalog.db.exec('BEGIN IMMEDIATE'); locked = true;
     if (JSON.stringify(captureStory(catalog, characterId, cwd)) !== signature) throw new Error('Story memory or source selection changed during backup. Finish the current operation and try again.');
     catalog.db.exec('COMMIT'); locked = false;
+    if (readPersona(cwd) !== persona) throw new Error('CHARACTER.md changed during backup. Finish editing and try again.');
   } finally { if (locked) catalog.db.exec('ROLLBACK'); catalog.db.exec('DETACH DATABASE story_memory'); }
   const bytes = zipSync(archive, { level: 6 });
   const handle = await open(destination, 'wx').catch(error => { throw new Error(`Cannot create backup at ${destination}. Choose a writable new filename. ${String(error)}`); });
@@ -123,11 +126,12 @@ function parseArchive(bytes: Uint8Array): { story: Story; files: Record<string, 
   const checksums: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(files['checksums.json']));
   if (!record(checksums) || checksums.storySha256 !== hash(files['story.json'])) throw new Error('The story manifest failed its integrity check.');
   const value: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(files['story.json']));
-  if (!record(value) || value.format !== 'reverie-story' || (value.version !== 1 && value.version !== 2)) throw new Error('Unsupported story backup format. Use a compatible Reverie release.');
+  if (!record(value) || value.format !== 'reverie-story' || value.version !== 3) throw new Error('Unsupported story backup format. Use a compatible Reverie release.');
   const story = value as unknown as Story;
   if (!record(story.character) || !uuid(story.character.id) || typeof story.character.name !== 'string' || !story.character.name.trim()
-    || typeof story.character.persona !== 'string' || !story.character.persona.trim() || !record(story.roleplay) || typeof story.roleplay.enabled !== 'boolean'
+    || !record(story.roleplay) || typeof story.roleplay.persona !== 'string' || typeof story.roleplay.enabled !== 'boolean'
     || !record(story.native) || !Number.isSafeInteger(story.native.revision) || !Array.isArray(story.sources) || !Array.isArray(story.recalls)) throw new Error('The story manifest is damaged.');
+  validatePersona(story.roleplay.persona);
   const model = story.roleplay.model;
   if (model && (!record(model) || typeof model.provider !== 'string' || typeof model.modelId !== 'string'
     || (model.thinkingLevel !== undefined && !['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(model.thinkingLevel)))) throw new Error('The saved model preference is invalid.');
@@ -177,9 +181,7 @@ function insertNative(db: DatabaseSync, prefix: string, story: Story): void {
       rows = [...rows].sort((a, b) => Number(a.id) - Number(b.id));
     }
     for (const row of rows) {
-      // Version-one story archives predating chronology shifts have no offset.
       if (table === 'episodes') {
-        if (story.version === 1 && row.time_offset === undefined) row.time_offset = 0;
         if (!Number.isSafeInteger(row.time_offset)) throw new Error('Invalid archived chronology offset.');
       }
       if (!fields.every(field => row[field] === null || typeof row[field] === 'string' || (typeof row[field] === 'number' && Number.isFinite(row[field])))) throw new Error(`Invalid ${table} data in this backup.`);
@@ -188,7 +190,20 @@ function insertNative(db: DatabaseSync, prefix: string, story: Story): void {
   }
 }
 
-interface RestoreJournal { characterId: string; directory: string; cwd: string; previousModel?: FolderModel; pid: number }
+interface RestoreJournal { characterId: string; directory: string; cwd: string; previousModel?: FolderModel; pid: number; promptHash?: string }
+const promptStage = (cwd: string, directory: string): string => join(cwd, `.${directory}.character.tmp`);
+/** Remove only our published inode, and retain any edits made after publication. */
+function cleanupPrompt(journal: RestoreJournal, complete: boolean): void {
+  if (!journal.promptHash) return;
+  const staged = promptStage(journal.cwd, journal.directory), target = personaPath(journal.cwd);
+  if (!complete) {
+    try {
+      const original = statSync(staged), current = statSync(target);
+      if (original.dev === current.dev && original.ino === current.ino && hash(readFileSync(target)) === journal.promptHash) unlinkSync(target);
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  }
+  try { unlinkSync(staged); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+}
 function importPath(catalog: Catalog, id: string): string {
   const root = resolve(catalog.directory, 'restored'), target = resolve(root, id);
   if (!uuid(id) || dirname(target) !== root) throw new Error('Invalid restore staging directory.');
@@ -239,7 +254,8 @@ export function recoverStoryRestores(catalog: Catalog): void {
           // The journal stores only a validated UUID, never an archive-controlled path.
           rmSync(importPath(catalog, journal.directory), { recursive: true, force: true });
         }
-        catalog.db.exec('COMMIT'); locked = false; unlinkSync(marker);
+        catalog.db.exec('COMMIT'); locked = false;
+        cleanupPrompt(journal, Boolean(complete)); unlinkSync(marker);
       } finally { if (locked) catalog.db.exec('ROLLBACK'); catalog.db.exec('DETACH DATABASE story_memory'); }
     } finally { unlockRestore(owner); }
   }
@@ -253,9 +269,13 @@ export async function restoreStory(catalog: Catalog, archive: string, cwd: strin
   const { story, files } = loaded;
   if (catalog.character(story.character.id)) throw new Error('This character already exists here. Restore into another installation or data directory; existing stories are never overwritten.');
   if (catalog.binding(cwd)) throw new Error('This folder is already linked. Open an unlinked folder before restoring a story.');
+  // Readability errors and existing files both stop restoration before publication.
+  try { await readFile(personaPath(cwd)); throw new Error('This folder already contains CHARACTER.md. Restore into a folder without that file.'); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   const directory = randomUUID(), target = importPath(catalog, directory), database = join(target, 'validation.sqlite');
   await mkdir(target, { recursive: true });
   let committed = false, journal: string | undefined, journalOwned = false, owner: DatabaseSync | undefined;
+  let marker: RestoreJournal | undefined, stagedPrompt = false;
   try {
     const paths = new Map(story.sources.map((source, index) => [source.episodeId, join(target, `${index}.jsonl`)]));
     for (const source of story.sources) {
@@ -296,21 +316,29 @@ export async function restoreStory(catalog: Catalog, archive: string, cwd: strin
       for (const recall of story.recalls) if (catalog.db.prepare('SELECT replyId FROM recalls WHERE replyId=?').get(recall.replyId)) throw new Error('A reply identity already exists here. Restore into a separate installation.');
       const real = realpathSync(cwd), canonical = process.platform === 'win32' ? real.toLocaleLowerCase('en-US') : real;
       journal = join(catalog.directory, `restore-${story.character.id}.json`);
-      const marker: RestoreJournal = { characterId: story.character.id, directory, cwd: canonical, previousModel: catalog.folderModel(cwd), pid: process.pid };
+      marker = { characterId: story.character.id, directory, cwd: canonical, previousModel: catalog.folderModel(cwd), pid: process.pid,
+        promptHash: hash(Buffer.from(story.roleplay.persona)) };
+      await writeDurable(promptStage(cwd, directory), story.roleplay.persona, () => { stagedPrompt = true; });
       await writeDurable(journal, JSON.stringify(marker), () => { journalOwned = true; });
+      // Hard-link from the same folder gives exclusive, complete-file publication.
+      linkSync(promptStage(cwd, directory), personaPath(cwd));
       insertNative(catalog.db, 'story_memory.', story);
-      catalog.db.prepare('INSERT INTO characters VALUES(?,?,?)').run(story.character.id, story.character.name, story.character.persona);
+      catalog.db.prepare('INSERT INTO characters(id,name) VALUES(?,?)').run(story.character.id, story.character.name);
       for (const source of story.sources) catalog.remember({ episodeId: source.episodeId, characterId: story.character.id, path: paths.get(source.episodeId)!, cwd: resolve(cwd), leaf: source.leaf });
       for (const recall of story.recalls) catalog.db.prepare('INSERT INTO recalls VALUES(?,?,?)').run(recall.episodeId, recall.replyId, recall.data);
       catalog.bind(cwd, story.character.id, story.roleplay.enabled);
       if (story.roleplay.model) catalog.setFolderModel(cwd, story.roleplay.model);
       catalog.db.exec('COMMIT'); locked = false; committed = true;
     } finally { if (locked) catalog.db.exec('ROLLBACK'); catalog.db.exec('DETACH DATABASE story_memory'); }
+    cleanupPrompt(marker!, true); stagedPrompt = false;
     await rm(journal, { force: true }); journal = undefined;
     return story.character;
   } catch (error) { throw new Error(`Restore failed: ${String(error)}${committed ? ' The story was saved; its restore journal will be checked on restart.' : ' No story was restored.'}`); }
   finally {
-    try { if (!committed) { await rm(importPath(catalog, directory), { recursive: true, force: true }); if (journal && journalOwned) await rm(journal, { force: true }); } }
+    try { if (!committed) {
+      if (stagedPrompt && marker) cleanupPrompt(marker, false);
+      await rm(importPath(catalog, directory), { recursive: true, force: true }); if (journal && journalOwned) await rm(journal, { force: true });
+    } }
     finally { if (owner) unlockRestore(owner); }
   }
 }

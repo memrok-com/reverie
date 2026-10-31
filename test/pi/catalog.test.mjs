@@ -21,7 +21,7 @@ test('catalogs created before thinking preferences retain their saved model duri
   const catalog = new Catalog(root);
   try {
     assert.deepEqual(catalog.folderModel(cwd), { provider: 'local', modelId: 'roleplay' });
-    const character = catalog.create('Mara', 'You are Mara.'); catalog.bind(cwd, character.id);
+    const character = catalog.create('Mara'); catalog.bind(cwd, character.id);
     catalog.setFolderModel(cwd, { provider: 'local', modelId: 'roleplay', thinkingLevel: 'off' });
   } finally { catalog.close(); }
   const reopened = new Catalog(root);
@@ -33,7 +33,7 @@ test('a missing parent directory is unavailable until it returns, while a delete
   const root = resolve('.work/catalog-tests', randomUUID()), parent = resolve(root, 'removable-drive'), offline = resolve(root, 'offline');
   await mkdir(parent, { recursive: true }); const path = resolve(parent, 'scene.jsonl');
   await writeFile(path, JSON.stringify({ id: 'm1', parentId: null, type: 'message', message: { role: 'user', content: 'We meet.' } }) + '\n');
-  const catalog = new Catalog(resolve(root, 'data')), character = catalog.create('Mara', 'You are Mara.'), warnings = [];
+  const catalog = new Catalog(resolve(root, 'data')), character = catalog.create('Mara'), warnings = [];
   const service = new MemoryService(catalog, nativeEnginePath(),
     async request => JSON.stringify(reflection(request)), (source, error) => warnings.push({ source, error }));
   t.after(async () => { await service.close(); catalog.close(); });
@@ -54,7 +54,7 @@ test('a failed warning callback does not block reconciliation or permanently sup
   const root = resolve('.work/catalog-tests', randomUUID());
   const catalog = new Catalog(root, async () => { throw Object.assign(new Error('Unreadable'), { code: 'EACCES' }); });
   t.after(() => catalog.close());
-  const character = catalog.create('Mara', 'You are Mara.');
+  const character = catalog.create('Mara');
   catalog.remember({ characterId: character.id, episodeId: 'scene', cwd: root, path: resolve(root, 'scene.jsonl'), leaf: null });
   await catalog.missingSources(() => { throw new Error('Notification failed'); });
   let warnings = 0;
@@ -96,7 +96,7 @@ for (const code of ['EACCES', 'EPERM', 'EIO', 'EBUSY']) {
       nativeEnginePath(),
       async request => JSON.stringify(reflection(request)), (source, error) => warnings.push({ source, error }));
     t.after(async () => { await service.close(); catalog.close(); });
-    const blocked = catalog.create('Blocked', 'You are wary.'), healthy = catalog.create('Healthy', 'You are hopeful.');
+    const blocked = catalog.create('Blocked'), healthy = catalog.create('Healthy');
     for (const [character, id, path] of [[blocked, 'blocked', blockedPath], [healthy, 'healthy', resolve(root, 'healthy.jsonl')],
       [healthy, 'deleted', resolve(root, 'deleted.jsonl')]]) {
       await writeFile(path, JSON.stringify({ id: 'm1', parentId: null, type: 'message', message: { role: 'user', content: 'We meet at the lighthouse.' } }) + '\n');

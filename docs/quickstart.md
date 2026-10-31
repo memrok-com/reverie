@@ -21,11 +21,11 @@ The engine starts automatically from the installed package. You do not configure
 1. Start Pi in the character's folder.
 2. Run `/reverie setup`.
 3. Create a character or choose an existing memory. The folder's name is suggested for a new character.
-4. Write the personality in the multiline editor and save it.
+4. Write this folder's personality in the multiline editor and save it as `CHARACTER.md` in the folder where you started Pi. An existing `CHARACTER.md` is offered as the draft.
 
-The association uses a stable character identity, so names do not act as database keys. Other folders may link to the same character. Their chats become episodes for that character. A folder's current link cannot change the owner of an existing chat; start `/new` when switching characters.
+The association uses a stable character identity, so names do not act as database keys. Other folders may link to the same character and share its memory, while keeping their own `CHARACTER.md`. For example, use separate folders for the character's youth and later life. Their chats become episodes for that character. Linking includes the folder's personality editor; cancelling leaves the file and link unchanged. A folder's current link cannot change the owner of an existing chat; start `/new` when switching characters.
 
-Use `/reverie` or Ctrl+Alt+M for the menu. Personality changes apply to the next character reply. Linked folders use the character personality and turn off Pi's coding tools; unlinking restores the original tool selection.
+Use `/reverie` or Ctrl+Alt+M for the menu. Edit `CHARACTER.md` in any text editor, or use `/reverie persona` to edit the same file through Pi. Saved changes apply to the next character reply without restarting. The file contains only the authored personality; Reverie adds its roleplay guidance and recalled memories when making a request. Missing, empty, oversized or unreadable files pause generation with recovery instructions. Pi detects external edits made while its editor is open and preserves them. Linked folders turn off Pi's coding tools; unlinking restores the original tool selection and keeps `CHARACTER.md`.
 
 Choose the model once with `/reverie model` (also available as **Model for this folder** in the menu). Subsequent explicit `/model` selections and thinking-level changes are saved automatically for this linked folder. The provider, model and thinking level are restored across new chats, resumed sessions, restart and `/reload`, without changing Pi's global defaults. The widget shows the active thinking level; memory formation uses it too. Unsupported thinking levels are adjusted to the model's capabilities. If the model becomes unavailable, generation pauses instead of falling back to another provider. Existing linked folders can initialize their saved choice with `/reverie model`.
 
@@ -69,7 +69,9 @@ Deleting a known session through Pi's `/resume` picker or outside Pi is detected
 
 ## Data and backups
 
-By default, Reverie stores `catalog.sqlite` and `memory.sqlite` under `~/.pi/agent/reverie/`. `PI_CODING_AGENT_DIR` relocates that root together with Pi's agent directory. This data is outside the installed package and survives upgrades/removal. Close Pi before backing up the database files so their journals settle.
+The personality lives in the startup folder's `CHARACTER.md` (UTF-8, nonempty, at most 100,000 characters). Reverie reads that exact folder; it does not search parent folders or use `.pi/SYSTEM.md` as the personality. Each played branch records its character foundation, so editing a local file does not rewrite earlier episodes or automatically regenerate memory.
+
+By default, Reverie stores character identities, folder links and memory in `catalog.sqlite` and `memory.sqlite` under `~/.pi/agent/reverie/`. `PI_CODING_AGENT_DIR` relocates that root together with Pi's agent directory. This data is outside the installed package and survives upgrades/removal. Close Pi before backing up the database files so their journals settle. Include the local `CHARACTER.md` files when making a manual backup; story ZIPs include the exporting folder's prompt.
 
 Pi owns the original session files. The catalog stores their paths and selected branch identities, not another transcript archive. Keep sessions for rebuilding. Pi normally stores them centrally by working directory; its `sessionDir` setting can place them inside a character folder.
 
