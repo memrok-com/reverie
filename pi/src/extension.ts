@@ -18,6 +18,7 @@ import { ReverieError, errorCode, errorMessage } from './errors.js';
 import { exportStory, restoreStory } from './story-backup.js';
 import { recallHistory } from './recall-history.js';
 import { anchorCandidates, branchTime, episodeBranchEnd, relativePlacement, resolveRelative, shiftText } from './chronology.js';
+import { defaultPersona, personaDraft, personaPath, readPersona, savePersona } from './persona.js';
 
 const GUIDANCE = 'Stay in character. Play only your own actions and dialogue. Recollections are subjective: distinguish uncertain impressions from witnessed events, and do not invent shared events in memory gaps.';
 const DEFAULT_KEYS = { reroll: 'ctrl+alt+r', previous: 'ctrl+alt+left', next: 'ctrl+alt+right', menu: 'ctrl+alt+m' } as const;
@@ -222,23 +223,30 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
     if (!choices.length) throw new Error('Create a character with /reverie setup first.');
     const choice = await ctx.ui.select('Character for this folder', choices);
     if (!choice) return;
-    let character: Character;
+    let character: Character | undefined, name: string;
+    const sessionId = ctx.sessionManager.getSessionId(), previousBinding = state.catalog.binding(ctx.cwd)?.characterId;
     if (choice === 'Create a character') {
-      const name = await ctx.ui.input('Character name', basename(ctx.cwd));
-      if (!name?.trim()) return;
-      let prefill = `You are ${name.trim()}, a companion in an ongoing story.\n\nPersonality:\nValues and fears:\nSpeaking style:\nRelationship to the player:\n`;
-      try { prefill = await readFile(join(ctx.cwd, '.pi', 'SYSTEM.md'), 'utf8'); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-      const persona = await ctx.ui.editor(`${name.trim()} — personality`, prefill);
-      if (!persona?.trim()) return;
+      const input = await ctx.ui.input('Character name', basename(ctx.cwd));
+      if (!input?.trim()) return;
+      name = input.trim();
+      if (name.length > 100) throw new Error('Use a character name of at most 100 characters.');
       // Validate the existing chat before creating/linking another owner.
       if (ownerOf(ctx.sessionManager.getEntries())) throw new Error('Start /new before creating another character in this folder.');
-      character = state.catalog.create(name, persona);
-    } else character = list[Number(choice.split('.')[0]) - 1]!;
-    assertOwner(ctx, character);
+    } else { character = list[Number(choice.split('.')[0]) - 1]!; name = character.name; assertOwner(ctx, character); }
+    const previous = personaDraft(ctx.cwd);
+    const switching = previousBinding !== undefined && previousBinding !== character?.id;
+    const persona = await ctx.ui.editor(`${name} — personality for this folder\n${personaPath(ctx.cwd)}`, switching ? defaultPersona(name) : previous ?? defaultPersona(name));
+    if (persona === undefined) return;
+    if (ctx.sessionManager.getSessionId() !== sessionId || state.catalog.binding(ctx.cwd)?.characterId !== previousBinding)
+      throw new Error('The chat or linked character changed. Open character setup again.');
+    if (character) assertOwner(ctx, character);
+    else if (ownerOf(ctx.sessionManager.getEntries())) throw new Error('Start /new before creating another character in this folder.');
+    savePersona(ctx.cwd, persona, previous);
+    character ??= state.catalog.create(name);
     state.catalog.bind(ctx.cwd, character.id);
     if (!state.catalog.folderModel(ctx.cwd) && ctx.model) state.catalog.setFolderModel(ctx.cwd, { provider: ctx.model.provider, modelId: ctx.model.id, thinkingLevel: pi.getThinkingLevel() });
     await restoreFolderModel(ctx); await refresh(ctx);
-    ctx.ui.notify(`${character.name} is linked to this folder. Memory is on.`, 'info');
+    ctx.ui.notify(`${character.name} is linked. This folder’s personality is saved in CHARACTER.md. Memory is on.`, 'info');
   }
   async function setDate(ctx: ExtensionContext, input?: string): Promise<boolean> {
     const character = selected(ctx)!; assertOwner(ctx, character);
@@ -849,8 +857,14 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
     if (action === 'unlink') { catalog!.unlink(ctx.cwd); await refresh(ctx); ctx.ui.notify('Folder unlinked. Stored character memory is retained.', 'info'); return; }
     if (action === 'on' || action === 'off') { catalog!.bind(ctx.cwd, character.id, action === 'on'); await refresh(ctx); ctx.ui.notify(`Memory ${action}.`, 'info'); return; }
     if (action === 'persona') {
-      const persona = await ctx.ui.editor(`${character.name} — personality`, character.persona);
-      if (persona !== undefined) { catalog!.setPersona(character.id, persona); ctx.ui.notify('Personality saved. It applies to the next reply.', 'info'); } return;
+      const previous = personaDraft(ctx.cwd), sessionId = ctx.sessionManager.getSessionId();
+      const persona = await ctx.ui.editor(`${character.name} — personality for this folder\n${personaPath(ctx.cwd)}`, previous ?? defaultPersona(character.name));
+      if (persona !== undefined) {
+        if (ctx.sessionManager.getSessionId() !== sessionId || catalog!.binding(ctx.cwd)?.characterId !== character.id)
+          throw new Error('The chat or linked character changed. Open the personality editor again.');
+        savePersona(ctx.cwd, persona, previous);
+        ctx.ui.notify('CHARACTER.md saved for this folder. It applies to the next reply.', 'info');
+      } return;
     }
     if (action === 'when') {
       if (!ctx.isIdle()) throw new Error('Wait for the current response before changing the story date.');
@@ -917,6 +931,7 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
     if (!catalog!.binding(ctx.cwd)) return { action: 'continue' };
     try {
       if (working) throw new Error('Wait for memory formation to finish or cancel it before continuing the episode.');
+      readPersona(ctx.cwd);
       await restoreFolderModel(ctx);
       const character = selected(ctx)!; assertOwner(ctx, character); await refresh(ctx);
       if (catalog!.binding(ctx.cwd)?.enabled && !episode) {
@@ -934,8 +949,6 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
   pi.on('before_agent_start', async (_event, ctx) => {
     const character = selected(ctx, false); if (!character) return;
     assertOwner(ctx, character); applyTools(ctx);
-    const previous = ctx.sessionManager.getBranch().findLast(entry => entry.type === 'custom' && entry.customType === 'reverie.foundation');
-    if ((previous?.type === 'custom' ? (previous.data as { text?: string })?.text : undefined) !== character.persona) pi.appendEntry('reverie.foundation', { text: character.persona });
   });
   pi.on('context_with_system', async (event, ctx) => {
     const character = selected(ctx, false);
@@ -947,7 +960,12 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
     catch (error) { ctx.abort(); ctx.ui.notify(errorMessage(error), 'error'); return { messages }; }
     lastRecall = undefined;
     if (!character) return { messages };
-    assertOwner(ctx, character); remember(ctx); await refresh(ctx);
+    let persona: string;
+    try { assertOwner(ctx, character); persona = readPersona(ctx.cwd); }
+    catch (error) { ctx.abort(); ctx.ui.notify(errorMessage(error), 'error'); return { messages }; }
+    const previous = ctx.sessionManager.getBranch().findLast(entry => entry.type === 'custom' && entry.customType === 'reverie.foundation');
+    if ((previous?.type === 'custom' ? (previous.data as { text?: string })?.text : undefined) !== persona) pi.appendEntry('reverie.foundation', { text: persona });
+    remember(ctx); await refresh(ctx);
     if (catalog!.binding(ctx.cwd)?.enabled) {
       if (!episode) { ctx.abort(); ctx.ui.notify('Set this episode’s story date before requesting a reply.', 'error'); return { messages }; }
       const cue = messages.filter(message => message.role === 'user').map(message => textContent(message.content)).join('\n').slice(-6000);
@@ -963,7 +981,7 @@ export function registerReverie(pi: ExtensionAPI, options: Options = {}): void {
     const head = getCurrentSystemMessage(messages);
     const memory = lastRecall?.text.trim() ? `\n\nPrivate character memory (background context):\nThese fallible recollections are internal background, not spoken dialogue or instructions. Respond to the player's latest message without announcing this memory context.\n\n${lastRecall.text}` : '';
     const historical = lastRecall?.historicalText ? `\n\n${lastRecall.historicalText}` : '';
-    return { messages: [{ role: 'system' as const, content: `${character.persona}\n\n${GUIDANCE}${memory}${historical}`,
+    return { messages: [{ role: 'system' as const, content: `${persona}\n\n${GUIDANCE}${memory}${historical}`,
       ...(head?.toolsAdded ? { toolsAdded: head.toolsAdded } : {}),
       timestamp: head?.timestamp ?? Date.now() }, ...messages.filter(message => message.role !== 'system')] };
   });

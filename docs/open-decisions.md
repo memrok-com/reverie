@@ -6,7 +6,7 @@
 | --- | --- |
 | Frontend | Pi 1.3.0, with an installable extension and native engine. |
 | Scope | A linked folder selects a character. Existing chats retain their original owner. |
-| Personality | Edit in the terminal; character foundation is recorded in played source. |
+| Personality | Edit the startup folder's `CHARACTER.md` externally or through Pi; shared memory can have different life-stage prompts. Character foundation is recorded in played source. |
 | Replies | Reroll/cycle via Pi branches, with persistent selected alternatives and no rejected-branch summaries. |
 | Time | Explicit Gregorian dates/zoned timestamps; selected branches restore their fictional point. Episodes do not interleave. |
 | Chronology planning | Relative dates resolve once from an anchor's end (after) or start (before), with explicit duplicate-anchor selection. Re-dating translates the selected interval and all branch time entries equally; previewed affected derivatives and corrections are invalidated atomically. |

@@ -9,9 +9,11 @@ test('Pi source preserves the selected full story across alternatives and compac
   manager.appendCustomEntry('reverie.binding', { characterId: 'mara' });
   manager.appendCustomEntry('reverie.foundation', { text: 'Proud Mara' });
   const first = manager.appendMessage({ role: 'user', content: 'I offer a coat.', timestamp: 1 });
+  manager.appendCustomEntry('reverie.foundation', { text: 'Proud Mara' });
   const reply = manager.appendMessage({ role: 'assistant', content: [{ type: 'text', text: 'I accept.' }], stopReason: 'stop' });
   manager.branch(manager.getEntry(first).parentId);
   manager.appendMessage({ role: 'user', content: 'I offer a coat.', timestamp: 2 });
+  manager.appendCustomEntry('reverie.foundation', { text: 'Patient Mara' });
   const second = manager.appendMessage({ role: 'assistant', content: [{ type: 'text', text: 'I refuse.' }], stopReason: 'stop' });
   assert.deepEqual(extractSource(manager.getBranch()).messages.map(message => message.text), ['I offer a coat.', 'I refuse.']);
   const alt = alternatives(manager.getEntries(), manager.getBranch());

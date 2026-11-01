@@ -5,9 +5,9 @@ Run `/reverie` or Ctrl+Alt+M to open the menu, grouped into **Character**, **Epi
 | Command | Behavior |
 | --- | --- |
 | `/reverie setup` | Create a character or link an existing memory to the current folder. |
-| `/reverie link` | Choose an existing character memory. |
+| `/reverie link` | Choose an existing character memory and save this folder's personality. |
 | `/reverie unlink` | Unlink this folder, retaining its stored character memory. |
-| `/reverie persona` | Edit the linked character's personality in the terminal. |
+| `/reverie persona` | Edit this folder's `CHARACTER.md` in the terminal; external editor changes also apply to the next reply. |
 | `/reverie model` | Select and save a model for this character folder, without changing Pi's global default. |
 | `/reverie on` / `off` | Enable or disable memory retrieval and formation. Personality remains active. |
 | `/reverie when [date] [label]` | Set fictional time, or open date input. A visible confirmation and widget show the result. |

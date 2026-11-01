@@ -10,6 +10,28 @@ import { MemoryService } from '../../.work/pi-test/service.mjs';
 import { reflection } from '../fixtures/subjective.mjs';
 import { nativeEnginePath } from '../../scripts/lib/native-toolchain.mjs';
 
+test('an older catalog drops its required persona column while retaining character identities and folder links', async () => {
+  const root = resolve('.work/catalog-tests', randomUUID()); await mkdir(root, { recursive: true });
+  const cwd = await realpath(root), key = process.platform === 'win32' ? cwd.toLocaleLowerCase('en-US') : cwd;
+  const id = randomUUID(), old = new DatabaseSync(resolve(root, 'catalog.sqlite'));
+  old.exec('CREATE TABLE characters(id TEXT PRIMARY KEY,name TEXT NOT NULL,persona TEXT NOT NULL); CREATE TABLE folders(cwd TEXT PRIMARY KEY,characterId TEXT NOT NULL,enabled INTEGER NOT NULL)');
+  old.prepare('INSERT INTO characters VALUES(?,?,?)').run(id, 'Earlier character', 'Old prompt content is not imported.');
+  old.prepare('INSERT INTO folders VALUES(?,?,?)').run(key, id, 0); old.close();
+  const catalog = new Catalog(root);
+  let created;
+  try {
+    assert.deepEqual({ ...catalog.character(id) }, { id, name: 'Earlier character' });
+    assert.deepEqual(catalog.binding(cwd), { characterId: id, enabled: false });
+    created = catalog.create('Mara'); catalog.bind(cwd, created.id);
+    assert.deepEqual(catalog.db.prepare('PRAGMA table_info(characters)').all().map(column => column.name), ['id', 'name']);
+  } finally { catalog.close(); }
+  const reopened = new Catalog(root);
+  try {
+    assert.deepEqual({ ...reopened.character(created.id) }, created);
+    assert.equal(reopened.characters().length, 2); assert.equal(reopened.binding(cwd).characterId, created.id);
+  } finally { reopened.close(); }
+});
+
 test('catalogs created before thinking preferences retain their saved model during migration', async () => {
   const root = resolve('.work/catalog-tests', randomUUID());
   await mkdir(root, { recursive: true });
@@ -21,7 +43,7 @@ test('catalogs created before thinking preferences retain their saved model duri
   const catalog = new Catalog(root);
   try {
     assert.deepEqual(catalog.folderModel(cwd), { provider: 'local', modelId: 'roleplay' });
-    const character = catalog.create('Mara', 'You are Mara.'); catalog.bind(cwd, character.id);
+    const character = catalog.create('Mara'); catalog.bind(cwd, character.id);
     catalog.setFolderModel(cwd, { provider: 'local', modelId: 'roleplay', thinkingLevel: 'off' });
   } finally { catalog.close(); }
   const reopened = new Catalog(root);
@@ -33,7 +55,7 @@ test('a missing parent directory is unavailable until it returns, while a delete
   const root = resolve('.work/catalog-tests', randomUUID()), parent = resolve(root, 'removable-drive'), offline = resolve(root, 'offline');
   await mkdir(parent, { recursive: true }); const path = resolve(parent, 'scene.jsonl');
   await writeFile(path, JSON.stringify({ id: 'm1', parentId: null, type: 'message', message: { role: 'user', content: 'We meet.' } }) + '\n');
-  const catalog = new Catalog(resolve(root, 'data')), character = catalog.create('Mara', 'You are Mara.'), warnings = [];
+  const catalog = new Catalog(resolve(root, 'data')), character = catalog.create('Mara'), warnings = [];
   const service = new MemoryService(catalog, nativeEnginePath(),
     async request => JSON.stringify(reflection(request)), (source, error) => warnings.push({ source, error }));
   t.after(async () => { await service.close(); catalog.close(); });
@@ -54,7 +76,7 @@ test('a failed warning callback does not block reconciliation or permanently sup
   const root = resolve('.work/catalog-tests', randomUUID());
   const catalog = new Catalog(root, async () => { throw Object.assign(new Error('Unreadable'), { code: 'EACCES' }); });
   t.after(() => catalog.close());
-  const character = catalog.create('Mara', 'You are Mara.');
+  const character = catalog.create('Mara');
   catalog.remember({ characterId: character.id, episodeId: 'scene', cwd: root, path: resolve(root, 'scene.jsonl'), leaf: null });
   await catalog.missingSources(() => { throw new Error('Notification failed'); });
   let warnings = 0;
@@ -96,7 +118,7 @@ for (const code of ['EACCES', 'EPERM', 'EIO', 'EBUSY']) {
       nativeEnginePath(),
       async request => JSON.stringify(reflection(request)), (source, error) => warnings.push({ source, error }));
     t.after(async () => { await service.close(); catalog.close(); });
-    const blocked = catalog.create('Blocked', 'You are wary.'), healthy = catalog.create('Healthy', 'You are hopeful.');
+    const blocked = catalog.create('Blocked'), healthy = catalog.create('Healthy');
     for (const [character, id, path] of [[blocked, 'blocked', blockedPath], [healthy, 'healthy', resolve(root, 'healthy.jsonl')],
       [healthy, 'deleted', resolve(root, 'deleted.jsonl')]]) {
       await writeFile(path, JSON.stringify({ id: 'm1', parentId: null, type: 'message', message: { role: 'user', content: 'We meet at the lighthouse.' } }) + '\n');

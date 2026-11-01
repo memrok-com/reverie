@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { access, mkdir, readFile, rm } from 'node:fs/promises';
+import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -29,7 +29,7 @@ async function fixture(t, existing) {
   let draft = '', replies = 0;
   const controls = { holdReflection: false, reflectionStarted: false, replyFailure: undefined, reflectionFailure: false, confirmDelete: true,
     holdInspectionDialog: false, dialogStarted: false, releaseDialog: undefined, releaseReflection: undefined,
-    onConfirm: undefined, onSelect: undefined, lastConfirmation: undefined, reflect: reflection };
+    onConfirm: undefined, onSelect: undefined, onEditor: undefined, lastConfirmation: undefined, reflect: reflection };
   const streamSimple = (_model, context, options) => {
     const stream = new AssistantMessageEventStream();
     queueMicrotask(() => {
@@ -92,7 +92,7 @@ async function fixture(t, existing) {
       return choice;
     },
     custom: async factory => { const component = factory({ terminal: { rows: 200 }, requestRender() {} }, { fg: (_color, text) => text }, {}, () => {}); inspections.push(component.render(200).join('\n')); },
-    input: async () => inputs.shift(), editor: async () => editors.shift(), confirm: async (title, message) => {
+    input: async () => inputs.shift(), editor: async (title, prefill) => { await controls.onEditor?.(title, prefill); return editors.shift(); }, confirm: async (title, message) => {
       controls.lastConfirmation = { title, message }; await controls.onConfirm?.(); return controls.confirmDelete;
     },
     notify: (message, level) => notices.push({ message, level }), setWidget: (key, value) => widgets.set(key, value), setStatus() {},
@@ -124,6 +124,105 @@ async function legacyDate(f, id, date, label) {
   try { await client.request('when', { episodeId: id, position: date, label }); }
   finally { await client.close(); catalog.close(); }
 }
+
+test('folder personalities share a character memory, reload external edits and keep played foundations', async t => {
+  const early = await fixture(t); await early.setup();
+  const firstPrompt = await readFile(resolve(early.cwd, 'CHARACTER.md'), 'utf8');
+  const earlyId = await memorizeEpisode(early, '2000-01-01', 'Youth');
+  const savedPath = early.manager.getSessionFile();
+  const late = await fixture(t, { root: early.root, cwd: resolve(early.root, 'Mara-later') });
+  late.choices.push(0); late.editors.push('You are Mara, older and more patient.'); await late.command('link');
+  const catalog = new Catalog(early.home);
+  try {
+    assert.equal(catalog.characters().length, 1);
+    assert.equal(catalog.binding(early.cwd).characterId, catalog.binding(late.cwd).characterId);
+  } finally { catalog.close(); }
+  late.inputs.push('2030-01-01 Reunion'); await late.session.prompt('Do you remember our blue lantern?');
+  const system = late.requests.at(-1).messages.find(item => item.role === 'system').content;
+  assert.match(system, /older and more patient/); assert.match(system, /Private character memory/);
+  assert.doesNotMatch(system, /proud and wary/);
+  assert.equal(await readFile(resolve(early.cwd, 'CHARACTER.md'), 'utf8'), firstPrompt);
+  const source = SessionManager.open(savedPath);
+  assert.equal(extractSource(source.getBranch()).foundation, firstPrompt);
+  const calls = late.requests.length;
+  await writeFile(resolve(late.cwd, 'CHARACTER.md'), 'You are Mara, now a retired lighthouse keeper.');
+  assert.equal(late.requests.length, calls);
+  await late.session.prompt('What changed?');
+  assert.match(late.requests.at(-1).messages.find(item => item.role === 'system').content, /retired lighthouse keeper/);
+  assert.equal(extractSource(late.manager.getBranch()).foundation, 'You are Mara, now a retired lighthouse keeper.');
+  assert.equal(extractSource(SessionManager.open(savedPath).getBranch()).foundation, firstPrompt);
+  assert.equal((await memorySnapshot(late)).episodes.find(item => item.episode.id === earlyId).freshness, 'current');
+  await early.command('off'); await early.session.prompt('Hello again.');
+  assert.match(early.requests.at(-1).messages.find(item => item.role === 'system').content, /proud and wary/);
+  assert.equal(early.errors.length + late.errors.length, 0);
+});
+
+test('personality editor cancels, saves the local file and refuses to overwrite concurrent external edits', async t => {
+  const f = await fixture(t); await f.setup();
+  const path = resolve(f.cwd, 'CHARACTER.md'), original = await readFile(path, 'utf8');
+  f.controls.onEditor = (title, prefill) => { assert.match(title, /CHARACTER.md/); assert.equal(prefill, original); };
+  await f.command('persona');
+  assert.equal(await readFile(path, 'utf8'), original);
+  f.controls.onEditor = async () => { await writeFile(path, 'Externally revised Mara.'); };
+  f.editors.push('Pi revised Mara.'); await f.command('persona');
+  assert.equal(await readFile(path, 'utf8'), 'Externally revised Mara.');
+  assert.match(f.notices.at(-1).message, /changed while the editor was open/);
+  f.controls.onEditor = undefined;
+  f.editors.push('Pi revised Mara.'); await f.command('persona');
+  assert.equal(await readFile(path, 'utf8'), 'Pi revised Mara.');
+  assert.match(f.notices.at(-1).message, /next reply/);
+  assert.equal(f.requests.length, 0);
+});
+
+test('setup and relinking cancellation preserve the file and binding; switching characters starts a fresh draft', async t => {
+  const f = await fixture(t), path = resolve(f.cwd, 'CHARACTER.md');
+  await writeFile(path, 'An authored younger Mara.');
+  f.choices.push(0); f.inputs.push('Mara'); await f.command('setup');
+  const catalog = new Catalog(f.home);
+  try { assert.equal(catalog.characters().length, 0); assert.equal(catalog.binding(f.cwd), undefined); }
+  finally { catalog.close(); }
+  assert.equal(await readFile(path, 'utf8'), 'An authored younger Mara.');
+  f.choices.push(0); f.inputs.push('Mara'); f.editors.push('An authored younger Mara.'); await f.command('setup');
+  const observer = new Catalog(f.home);
+  let anya, index, mara;
+  try {
+    mara = observer.binding(f.cwd).characterId; anya = observer.create('Anya');
+    index = observer.characters().findIndex(item => item.id === anya.id);
+  } finally { observer.close(); }
+  f.controls.onEditor = (_title, prefill) => { assert.match(prefill, /You are Anya/); assert.doesNotMatch(prefill, /younger Mara/); };
+  f.choices.push(index); await f.command('link');
+  const checked = new Catalog(f.home);
+  try { assert.equal(checked.binding(f.cwd).characterId, mara); } finally { checked.close(); }
+  assert.equal(await readFile(path, 'utf8'), 'An authored younger Mara.');
+  f.choices.push(index); f.editors.push('You are Anya.'); await f.command('link');
+  const switched = new Catalog(f.home);
+  try { assert.equal(switched.binding(f.cwd).characterId, anya.id); } finally { switched.close(); }
+  assert.equal(await readFile(path, 'utf8'), 'You are Anya.');
+  assert.equal(f.requests.length, 0);
+});
+
+test('invalid or missing personality blocks input and continuation until repaired through Pi', async t => {
+  const f = await fixture(t); await f.setup(); await f.command('off');
+  const path = resolve(f.cwd, 'CHARACTER.md');
+  for (const invalid of ['', ' '.repeat(3), 'x'.repeat(100_001), undefined, 'directory']) {
+    await rm(path, { force: true });
+    if (invalid === 'directory') await mkdir(path);
+    else if (invalid !== undefined) await writeFile(path, invalid);
+    const calls = f.requests.length;
+    await f.session.prompt('A message to preserve.');
+    assert.equal(f.requests.length, calls); assert.equal(f.draft, 'A message to preserve.');
+    assert.match(f.notices.at(-1).message, /CHARACTER.md/);
+  }
+  await rm(path, { recursive: true });
+  f.editors.push('You are Mara, restored.'); await f.command('persona');
+  await f.session.prompt('A message to preserve.');
+  assert.match(f.requests.at(-1).messages.find(item => item.role === 'system').content, /Mara, restored/);
+  const calls = f.requests.length;
+  await rm(path);
+  await f.session.agent.prompt('Continue without the input hook.');
+  assert.equal(f.requests.length, calls);
+  assert.match(f.notices.at(-1).message, /reverie persona/);
+});
 
 async function withNativeMemory(f, run) {
   const catalog = new Catalog(f.home);
@@ -724,7 +823,7 @@ test('a character folder restores its model and thinking level across new, resum
   // The same character in a second folder can have its own model choice.
   const other = await fixture(t, { root: f.root, cwd: resolve(f.root, 'Second folder') });
   assert.equal(other.session.model.id, 'fixture');
-  other.choices.push(0); await other.command('link');
+  other.choices.push(0); other.editors.push('You are Mara in another stage of life.'); await other.command('link');
   assert.equal(catalog.folderModel(other.cwd).modelId, 'fixture');
   assert.equal(catalog.folderModel(other.cwd).thinkingLevel, 'off');
   assert.equal(catalog.folderModel(f.cwd).modelId, 'local-roleplay');
@@ -815,7 +914,7 @@ test('memory off keeps persona without recall; relinking cannot change an existi
   assert.match(JSON.stringify(f.requests.at(-1)), /You are Mara, proud and wary/);
   assert.doesNotMatch(JSON.stringify(f.requests.at(-1)), /reverie.recall/);
   assert.doesNotMatch(JSON.stringify(f.requests.at(-1)), /No long-term recollections/);
-  const catalog = new Catalog(f.home); const anya = catalog.create('Anya', 'You are Anya.');
+  const catalog = new Catalog(f.home); const anya = catalog.create('Anya');
   const index = catalog.characters().findIndex(character => character.id === anya.id); catalog.close();
   f.choices.push(index); await f.command('link');
   assert.match(f.notices.at(-1).message, /another character/);

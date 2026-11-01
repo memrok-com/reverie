@@ -7,7 +7,8 @@ import { reflection } from '../test/fixtures/subjective.mjs';
 const root = resolve('.work/pi-ui'), cwd = join(root, 'Mara'), agentDir = join(root, 'agent');
 await mkdir(cwd, { recursive: true }); await mkdir(agentDir, { recursive: true });
 const catalog = new Catalog(join(agentDir, 'reverie'));
-const character = catalog.characters()[0] ?? catalog.create('Mara', 'You are Mara, proud and slow to trust. Speak naturally in first person.');
+const character = catalog.characters()[0] ?? catalog.create('Mara');
+await writeFile(join(cwd, 'CHARACTER.md'), 'You are Mara, proud and slow to trust. Speak naturally in first person.');
 catalog.bind(cwd, character.id); catalog.close();
 let replies = 0; const requests = [];
 const server = createServer(async (req, res) => {

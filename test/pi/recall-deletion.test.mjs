@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, readFile, rm } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
@@ -16,7 +16,8 @@ import { nativeEnginePath } from '../../scripts/lib/native-toolchain.mjs';
 async function fixture(t, transform = result => result) {
   const root = resolve('.work/recall-deletion-tests', randomUUID()), home = join(root, 'data');
   await mkdir(root, { recursive: true });
-  const catalog = new Catalog(home), character = catalog.create('Mara', 'You are Mara, proud and wary.'), calls = [];
+  await writeFile(join(root, 'CHARACTER.md'), 'You are Mara, proud and wary.');
+  const catalog = new Catalog(home), character = catalog.create('Mara'), calls = [];
   const infer = async request => {
     calls.push(request.input.episode.label);
     const result = reflection(request); result.memories[0].detail += ` sample ${calls.length}`;
@@ -30,7 +31,7 @@ async function fixture(t, transform = result => result) {
     const native = service.client(owner.id), manager = SessionManager.create(root, join(root, 'sessions'));
     const id = manager.getSessionId();
     manager.appendCustomEntry('reverie.binding', { characterId: owner.id });
-    manager.appendCustomEntry('reverie.foundation', { text: owner.persona });
+    manager.appendCustomEntry('reverie.foundation', { text: `You are ${owner.name}.` });
     const prompt = manager.appendMessage({ role: 'user', content: 'I offer a blue lantern.', timestamp: 1 });
     await native.request('when', { episodeId: id, position: date, label });
     if (end !== date) await native.request('when', { episodeId: id, position: end });
@@ -74,7 +75,7 @@ test('deletion removes only affected later records, including ongoing episodes, 
   const a = await f.episode('A', '2000-01-01'), b = await f.episode('B', '2010-01-01');
   const c = await f.episode('C', '2020-01-01'), d = await f.episode('D', '2030-01-01');
   const ongoing = await f.episode('ongoing', '2040-01-01', { memorize: false });
-  const other = f.catalog.create('Anya', 'You are Anya.');
+  const other = f.catalog.create('Anya');
   const foreign = await f.episode('foreign', '2030-01-01', { owner: other });
   const before = (await f.inspected(b.id)).contribution, calls = f.calls.length;
   await f.service.forget(c.id, f.character.id);
@@ -254,7 +255,7 @@ test('legacy impression fallback is character-scoped and preserves records witho
   const f = await fixture(t), a = await f.episode('A', '2000-01-01');
   const b = await f.episode('B', '2010-01-01');
   const contribution = (await f.inspected(b.id)).contribution;
-  const other = f.catalog.create('Anya', 'You are Anya.'), foreign = await f.episode('foreign', '2000-01-01', { owner: other, memorize: false });
+  const other = f.catalog.create('Anya'), foreign = await f.episode('foreign', '2000-01-01', { owner: other, memorize: false });
   const legacy = { ...b.recall }; delete legacy.impressionEpisodeId;
   f.catalog.saveRecall(b.id, b.reply, legacy);
   const history = recallHistory(f.catalog, b.manager.getBranch(), b.id, f.character.id);
@@ -279,7 +280,7 @@ test('reference cleanup preserves unrelated replies in the same re-dated episode
   const f = await fixture(t);
   const root = await f.episode('Root', '1980-01-01'), a = await f.episode('A', '2000-01-01');
   const b = await f.episode('B', '2010-01-01', { memorize: false });
-  const other = f.catalog.create('Anya', 'You are Anya.'), foreign = await f.episode('foreign', '2010-01-01', { owner: other, memorize: false });
+  const other = f.catalog.create('Anya'), foreign = await f.episode('foreign', '2010-01-01', { owner: other, memorize: false });
   // Even a foreign record naming A is outside this character's cleanup scope.
   const foreignRecord = { ...foreign.recall, memories: [{ episodeId: a.id, gist: 'I remember A.' }] };
   f.catalog.saveRecall(foreign.id, foreign.reply, foreignRecord);
