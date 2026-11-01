@@ -63,10 +63,22 @@ export class Catalog {
     this.db.exec('CREATE TABLE IF NOT EXISTS recalls(episodeId TEXT NOT NULL,replyId TEXT PRIMARY KEY,data TEXT NOT NULL);');
     this.db.exec('CREATE TABLE IF NOT EXISTS recall_deletions(episodeId TEXT PRIMARY KEY,affected TEXT NOT NULL);');
     this.db.exec('CREATE TABLE IF NOT EXISTS folder_models(cwd TEXT PRIMARY KEY,provider TEXT NOT NULL,modelId TEXT NOT NULL,thinkingLevel TEXT);');
-    if (!this.db.prepare('PRAGMA table_info(folder_models)').all().some(column => column.name === 'thinkingLevel')) {
-      this.db.exec('ALTER TABLE folder_models ADD COLUMN thinkingLevel TEXT');
+    let migrating = false;
+    try {
+      this.db.exec('BEGIN IMMEDIATE'); migrating = true;
+      // Prompt content is folder-owned; remove the obsolete insert constraint as well.
+      if (this.db.prepare('PRAGMA table_info(characters)').all().some(column => column.name === 'persona')) {
+        this.db.exec('ALTER TABLE characters DROP COLUMN persona');
+      }
+      if (!this.db.prepare('PRAGMA table_info(folder_models)').all().some(column => column.name === 'thinkingLevel')) {
+        this.db.exec('ALTER TABLE folder_models ADD COLUMN thinkingLevel TEXT');
+      }
+      this.db.exec('COMMIT'); migrating = false;
+      recoverStoryRestores(this);
+    } catch (error) {
+      if (migrating) this.db.exec('ROLLBACK');
+      this.db.close(); throw error;
     }
-    try { recoverStoryRestores(this); } catch (error) { this.db.close(); throw error; }
   }
   characters(): Character[] { return this.db.prepare('SELECT * FROM characters ORDER BY name,id').all() as unknown as Character[]; }
   character(id: string): Character | undefined { return this.db.prepare('SELECT * FROM characters WHERE id=?').get(id) as unknown as Character | undefined; }

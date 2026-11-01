@@ -69,7 +69,9 @@ Deleting a known session through Pi's `/resume` picker or outside Pi is detected
 
 ## Data and backups
 
-The personality lives in the startup folder's `CHARACTER.md` (UTF-8, nonempty, at most 100,000 characters). Reverie reads that exact folder; it does not search parent folders or use `.pi/SYSTEM.md` as the personality. Each played branch records its character foundation, so editing a local file does not rewrite earlier episodes or automatically regenerate memory.
+The personality lives in the startup folder's `CHARACTER.md` (UTF-8, nonempty, at most 100,000 characters). Reverie reads that exact folder; it does not search parent folders or use `.pi/SYSTEM.md` as the personality. Each played branch records its character foundation, so editing a local file does not rewrite earlier episodes or automatically regenerate memory. If `CHARACTER.md` is a symbolic link to an existing file, Pi's editor updates the target while preserving the link and existing file permissions. A missing link target must be repaired before saving.
+
+Opening an older catalog removes its obsolete personality column while retaining character identities and folder links. Old database prompt content is not imported into `CHARACTER.md`; save a local prompt before continuing in those folders.
 
 By default, Reverie stores character identities, folder links and memory in `catalog.sqlite` and `memory.sqlite` under `~/.pi/agent/reverie/`. `PI_CODING_AGENT_DIR` relocates that root together with Pi's agent directory. This data is outside the installed package and survives upgrades/removal. Close Pi before backing up the database files so their journals settle. Include the local `CHARACTER.md` files when making a manual backup; story ZIPs include the exporting folder's prompt.
 

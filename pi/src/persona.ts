@@ -1,5 +1,5 @@
-import { closeSync, existsSync, linkSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync, fsyncSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { closeSync, existsSync, fchmodSync, linkSync, lstatSync, openSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync, fsyncSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 export const PERSONA_FILE = 'CHARACTER.md';
@@ -27,14 +27,25 @@ export function readPersona(cwd: string): string {
 /** Publish a complete file, detecting edits since the Pi editor was opened. */
 export function savePersona(cwd: string, text: string, expected: string | undefined): void {
   validatePersona(text);
-  const target = personaPath(cwd), temporary = join(cwd, `.${randomUUID()}.character.tmp`);
+  const path = personaPath(cwd);
+  let target = path, mode: number | undefined;
+  try { target = realpathSync(path); mode = statSync(target).mode & 0o777; }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    if (lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink())
+      throw new Error(`Cannot save ${path}: its symbolic link points to a missing file. Repair the link or create its target, then reopen the personality editor.`);
+  }
+  const temporary = join(dirname(target), `.${randomUUID()}.character.tmp`);
   let descriptor: number | undefined;
   try {
     descriptor = openSync(temporary, 'wx', 0o600);
-    writeFileSync(descriptor, text, 'utf8'); fsyncSync(descriptor);
+    writeFileSync(descriptor, text, 'utf8');
+    if (mode !== undefined) fchmodSync(descriptor, mode);
+    fsyncSync(descriptor);
     closeSync(descriptor); descriptor = undefined;
-    if (personaDraft(cwd) !== expected) throw new Error(`${PERSONA_FILE} changed while the editor was open. Your external changes were kept. Reopen /reverie persona to edit the current file.`);
-    if (expected === undefined) linkSync(temporary, target); // Exclusive creation: never replace an existing file.
+    if (personaDraft(cwd) !== expected || (mode !== undefined && realpathSync(path) !== target))
+      throw new Error(`${PERSONA_FILE} changed while the editor was open. Your external changes were kept. Reopen /reverie persona to edit the current file.`);
+    if (expected === undefined) linkSync(temporary, path); // Exclusive creation: never replace an existing file.
     else renameSync(temporary, target);
   } finally {
     if (descriptor !== undefined) closeSync(descriptor);

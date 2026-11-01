@@ -233,6 +233,22 @@ test('restore refuses an existing prompt and can retry after choosing an empty d
   assert.equal(await readFile(path, 'utf8'), 'You are Mara, proud and wary.');
 });
 
+test('restore works in an older catalog whose characters table required a persona', async t => {
+  const f = await fixture(t); await exportStory(f.catalog, f.character.id, f.archive, f.cwd);
+  const cwd = join(f.root, 'older-install-folder'), home = join(f.root, 'older-install-data');
+  await mkdir(cwd); await mkdir(home);
+  const id = randomUUID(), old = new DatabaseSync(join(home, 'catalog.sqlite'));
+  old.exec('CREATE TABLE characters(id TEXT PRIMARY KEY,name TEXT NOT NULL,persona TEXT NOT NULL)');
+  old.prepare('INSERT INTO characters VALUES(?,?,?)').run(id, 'Other character', 'A previous prompt.'); old.close();
+  const catalog = new Catalog(home); t.after(() => catalog.close());
+  await restoreStory(catalog, f.archive, cwd, executable);
+  assert.equal(catalog.characters().length, 2);
+  assert.deepEqual({ ...catalog.character(id) }, { id, name: 'Other character' });
+  assert.deepEqual({ ...catalog.character(f.character.id) }, f.character);
+  assert.equal(catalog.binding(cwd).characterId, f.character.id);
+  assert.equal(await readFile(join(cwd, 'CHARACTER.md'), 'utf8'), 'You are Mara, proud and wary.');
+});
+
 test('a live restore journal is never overwritten or removed by a second import', async t => {
   const f = await fixture(t); await exportStory(f.catalog, f.character.id, f.archive, f.cwd);
   const d = await destination(t, f.root), marker = join(d.home, `restore-${f.character.id}.json`);
