@@ -57,3 +57,19 @@ node scripts/test-native.mjs
 The tests run the Rust unit tests, build the release executable, and run the native and process suites against it. A test host implemented with Node built-ins supplies deterministic played source and model responses over the wire. `test/support/reflection.mjs` retains the golden-format oracle for prompt and source parity.
 
 Linux x64 CI runs the same suite on main pushes and pull requests. Local reports go to `.work/validation`. Set `REVERIE_VALIDATION_DIR` to select another directory.
+
+## Package a Windows x64 release
+
+Commit the release source first. Packaging records that commit, builds with the pinned toolchain, and collects dependency notices. The Rust documentation component supplies the standard library's copyright and license files. Install it once with the same workspace-local Rust setup used above.
+
+```powershell
+$env:RUSTUP_HOME = Join-Path $PWD '.work/toolchains/rustup'
+$env:CARGO_HOME = Join-Path $PWD '.work/toolchains/cargo'
+& .work/toolchains/cargo/bin/rustup.exe component add rust-docs --toolchain 1.99.1-x86_64-pc-windows-gnu
+node scripts/package-native.mjs
+node scripts/test-package-native.mjs
+```
+
+For the older local toolchain layout, use `stable-x86_64-pc-windows-gnu` in the component command after checking its pinned version. The ZIP and `.sha256` file are written to `dist/reverie-v<version>-windows-x64.zip`. Verification checks the checksum and notices, extracts to a fresh directory, then runs storage and host-protocol tests with a runtime PATH containing only Windows system tools. It needs neither compiler nor Node on the executable's PATH.
+
+Publish the ZIP and checksum from the tagged, clean release commit. The package includes `LICENSE`, `NOTICE`, native dependency licenses, SQLite attribution and Rust/MinGW/GCC runtime notices.
