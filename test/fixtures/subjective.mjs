@@ -1,4 +1,4 @@
-// Authored roleplay fixture for native and Pi acceptance suites.
+// Authored roleplay fixture for memory engine tests.
 export function reflection(request) {
   const episode = request.input.episode;
   const prior = request.input.eligibleEarlierEpisodes.map(item => item.id);

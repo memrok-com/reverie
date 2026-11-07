@@ -1,20 +1,20 @@
 # Reverie ubiquitous language
 
-Use these terms to discuss Reverie's behavior and its boundary with the RPG and Pi. They describe product concepts rather than a committed database schema. Terms marked proposed still need agreement.
+Use these terms to discuss Reverie's behavior and its boundary with the RPG and host. They describe product concepts rather than a committed database schema. Terms marked proposed still need agreement.
 
 ## Characters and sources
 
 | Term | Meaning |
 | --- | --- |
-| Player | The human playing alongside the companion. Their RPG character is substantially based on themselves. |
-| Character | The companion or NPC whose subjective memory Reverie serves. |
-| Agent | The runtime that plays the character through a model and Pi. Prefer character when discussing fictional experience. |
+| Player | The human taking part in play. |
+| Character | The fictional person whose subjective memory Reverie serves. |
+| Agent | The runtime that plays the character through a model. Prefer character when discussing fictional experience. |
 | Character foundation | The system prompt defining identity, personality, and starting background. Maintained outside Reverie and appropriate to the episode's life stage. |
 | RPG | The fictional setting and ongoing play in which the player and character participate. It owns narrative continuity and what happens in unplayed gaps. |
-| Conversation | A Pi chat that hosts an episode. A conversation is not a folder or an entire character's history. |
-| Episode | One conversation of roleplay, implicitly started by its first player message. Memorization establishes its current ending; continued play can reopen it and replace its memorized contribution later. |
-| Transcript | The Pi-owned canonical record of a conversation. It can contain dialogue, narration, mistaken beliefs, injected context, and controls; those are not interchangeable as evidence of fictional events. |
-| Source reference | An identity relating derived memory to its originating episode or source messages, without storing a second transcript archive. Inspection presents episode labels; internal provenance retains Pi identities. |
+| Conversation | The host's chat or dialogue used as the played source for an episode. |
+| Episode | A unit of played source with a stable identity and a place in fictional chronology. Continued play can change its source and replace its memorized contribution later. |
+| Transcript | The host-owned canonical record of a conversation. It can contain dialogue, narration, mistaken beliefs, injected context, and controls; those are not interchangeable as evidence of fictional events. |
+| Source reference | An identity relating derived memory to its originating episode or source messages, without storing a second transcript archive. Inspection presents episode labels; internal provenance retains host-supplied source identities. |
 
 ## Time and continuity
 
@@ -54,18 +54,17 @@ Use these terms to discuss Reverie's behavior and its boundary with the RPG and 
 
 | Term | Meaning |
 | --- | --- |
-| Memorize | The explicit action that establishes the episode's current ending and forms or replaces its derived contribution from the full conversation so far. The recommended namespaced form is `/reverie memorize`. |
+| Memorize | The explicit action that establishes the episode's current ending and forms or replaces its derived contribution from the full conversation so far. |
 | Episode contribution | The derived memory originating from an episode. Repeated memorization replaces it and refreshes dependent reflections instead of counting the experience again. |
 | Included episode | An episode explicitly selected to contribute to memory through successful memorization. A rebuild preserves this selection. |
 | Unmemorize | Withdraw an episode's contribution and refresh affected derived memory while retaining its transcript. It remains excluded until explicitly memorized again. |
 | Retrieval | Selecting eligible memory relevant to the character's next response before each character turn. It should be fast enough to preserve conversational flow. |
-| Injection | Supplying retrieved memory to the agent's context after its character foundation and before each character turn. Exact Pi message placement is an integration decision. |
+| Injection | Supplying retrieved memory to the agent's context after its character foundation and before each character turn. |
 | Rebuild | Recreating affected derived memory from the current source after deletion or other relevant changes. It does not rewrite previously played dialogue. |
 | Episode deletion | Intentional removal of an episode from source and derived memory, including its influence on reflections. It is distinct from hiding a chat or ordinary forgetting. |
 | Cascade editing or deletion | Changes to other source episodes needed after an episode is changed or removed. The player and RPG own these changes; Reverie rebuilds from the resulting source. |
-| Adapter | The connection between Reverie and Pi, including source access, character and temporal inputs, commands, model access, and memory injection. |
+| Adapter | The host's connection to Reverie. It supplies character and temporal inputs, played source, and model reflection. |
 | Active character | The single character whose memories are served during a runtime. Other characters can have separately stored memory. |
-| Command namespace | The public command root under which Reverie's controls are grouped. `/reverie` is the recommendation; exact forms are listed in [user controls](user-controls.md). |
 
 ## Examples that constrain the terms
 

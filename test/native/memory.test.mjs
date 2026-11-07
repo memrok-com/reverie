@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { resolve } from 'node:path';
-import { MemoryClient } from '../../.work/pi-test/memory-client.mjs';
+import { MemoryClient } from '../support/memory-client.mjs';
 import { fingerprint, reflectionRequest } from '../support/reflection.mjs';
 import { episodeSource, reflection } from '../fixtures/subjective.mjs';
 import { nativeEnginePath } from '../../scripts/lib/native-toolchain.mjs';

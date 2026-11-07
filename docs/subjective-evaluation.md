@@ -1,6 +1,6 @@
 # Evaluating subjective memory
 
-The native memory mechanism preserves the existing reflection prompt and its test-only golden-format oracle. The Pi migration tests verify host integration and chronology using a deterministic model. They do not establish the quality of a particular live model's remembered prose.
+The native memory mechanism preserves the existing reflection prompt and its test-only golden-format oracle. The native process tests verify the host protocol and chronology using a deterministic model. They do not establish the quality of a particular live model's remembered prose.
 
 For sustained play, evaluate these authored scenarios:
 

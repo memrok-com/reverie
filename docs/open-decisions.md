@@ -1,25 +1,23 @@
 # Decisions
 
-## Selected for 0.1.0
+## Current decisions
 
 | Area | Decision |
 | --- | --- |
-| Frontend | Pi 1.3.0, with an installable extension and native engine. |
-| Scope | A linked folder selects a character. Existing chats retain their original owner. |
-| Personality | Edit the startup folder's `CHARACTER.md` externally or through Pi; shared memory can have different life-stage prompts. Character foundation is recorded in played source. |
-| Replies | Reroll/cycle via Pi branches, with persistent selected alternatives and no rejected-branch summaries. |
-| Time | Explicit Gregorian dates/zoned timestamps; selected branches restore their fictional point. Episodes do not interleave. |
+| Host boundary | Hosts own play, transcripts, branch selection and model access. Reverie owns derived memory. |
+| Scope | One character per process, with stable character and episode IDs supplied by the host. |
+| Character foundation | The host supplies the foundation appropriate to the played source and its place in the character's life. |
+| Time | Explicit Gregorian dates or zoned timestamps. Episodes do not interleave. |
 | Chronology planning | Relative dates resolve once from an anchor's end (after) or start (before), with explicit duplicate-anchor selection. Re-dating translates the selected interval and all branch time entries equally; previewed affected derivatives and corrections are invalidated atomically. |
 | Memory | Whole-episode reflection on explicit memorization; local lexical retrieval before replies. |
-| Deletion | Model-independent removal and dependent-derivative invalidation; durable reconciliation for host/external deletion. |
-| Distribution | Public Apache-2.0 source; local Windows x64 package with bundled license notices. npm registry publication is pending; unsupported platforms fail explicitly. |
+| Deletion | Model-independent removal and dependent-derivative invalidation. The host owns transcript deletion. |
+| Distribution | Apache-2.0 source with native executable builds and a Rust crate usable from source. |
 
 ## Still open
 
 - Sustained-play quality and tuning of subjective recall.
-- Broader platform and Pi-version coverage.
+- Broader platform coverage and distribution of signed native binaries.
 - Fantasy calendars and a visual timeline.
 - Handling episodes exceeding the reflection model's context window.
 - Semantic retrieval if lexical cue matching proves insufficient.
-- A public package registry release and signing.
-- An explicit DSH-to-Pi source/data migration tool if existing real stories need importing. Old data is preserved and never silently relinked.
+- A public Rust crate release.

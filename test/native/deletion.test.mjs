@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
-import { MemoryClient } from '../../.work/pi-test/memory-client.mjs';
+import { MemoryClient } from '../support/memory-client.mjs';
 import { reflection, episodeSource } from '../fixtures/subjective.mjs';
 import { nativeEnginePath } from '../../scripts/lib/native-toolchain.mjs';
 
