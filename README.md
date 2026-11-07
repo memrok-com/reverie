@@ -11,6 +11,12 @@ A host supplies the played source and runs model-assisted reflection. Reverie st
 - [Ubiquitous language](docs/ubiquitous-language.md)
 - [Validation and limits](docs/validation.md)
 
+## Download v0.2.0
+
+The [v0.2.0 release](https://github.com/memrok-com/reverie/releases/tag/v0.2.0) includes a Windows x64 ZIP and SHA-256 checksum. Extract the whole ZIP, including its notices. The executable needs no Node, Rust or Pi installation. A host supplies the interface and model access over protocol 1.
+
+For other platforms, [build from source](docs/development.md). Linux x64 is tested in CI; this release provides a prebuilt Windows x64 executable only.
+
 ## Earlier Pi integration
 
 The [last revision with the Pi extension](https://github.com/memrok-com/reverie/tree/518cb3e911e0fb5a056d7862179c2cae5b6d7c05) retains its installation and [story export instructions](https://github.com/memrok-com/reverie/blob/518cb3e911e0fb5a056d7862179c2cae5b6d7c05/docs/story-backup.md). Existing Pi stories can still be opened and exported with that version. The standalone engine takes episode source from its host. Importing a legacy story archive is a host responsibility.

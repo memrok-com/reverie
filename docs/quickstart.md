@@ -1,6 +1,8 @@
 # Connect a host
 
-Install the development tools for your platform using the [setup guide](development.md). From the repository root, build the native executable.
+On Windows x64, download and extract the ZIP from [Reverie v0.2.0](https://github.com/memrok-com/reverie/releases/tag/v0.2.0). Point your host at the extracted `reverie-engine.exe`.
+
+To build from source instead, install the development tools for your platform using the [setup guide](development.md). From the repository root, build the native executable.
 
 ```text
 node scripts/cargo.mjs build --release --locked
@@ -23,7 +25,7 @@ Send one JSON object per line to standard input. For example, send a request to 
 Read the response from standard output. This build reports protocol version 1.
 
 ```json
-{"id":1,"result":{"version":"0.1.0","characterId":"mara","protocol":1,"runtime":"rust"}}
+{"id":1,"result":{"version":"0.2.0","characterId":"mara","protocol":1,"runtime":"rust"}}
 ```
 
 Use `when` with an episode ID and fictional date to place the episode, then request `memorize` when the player explicitly asks to form memory. During memorization, the engine requests the played source and calls back for model reflection. A host must handle those callbacks while awaiting the response. Use `inspect` to read published memory or `retrieve` to select eligible context for a later episode.
