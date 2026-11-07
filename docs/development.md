@@ -1,12 +1,12 @@
 # Development
 
-Use Node 24.9–24.x and Pi 1.3.0. Install development dependencies with `npm ci`. Pi's SDK is a development dependency; the shipped bundle does not install another Pi.
+Use the Node version in `.node-version` for development scripts. The scripts use built-in modules and require no npm install. The standalone executable requires neither Node nor the build tools at runtime.
 
 The Windows native build uses the workspace-local Rust 1.99.1 GNU and portable GCC 16.2.0 toolchains under `.work/toolchains`, selected by `scripts/cargo.mjs`. Users need neither compiler.
 
 ## Set up a fresh Windows x64 checkout
 
-Install Node 24.20.0 (the version in `.node-version`) and Git, then clone this repository and open PowerShell in its root. `npm ci` installs the locked JavaScript dependencies.
+Install Node 24.20.0 (the version in `.node-version`) and Git, then clone this repository and open PowerShell in its root.
 
 Download `rustup-init.exe` and its `.sha256` file using the Windows x64 links in the [official rustup installation instructions](https://rust-lang.github.io/rustup/installation/other.html). Save them as `.work/toolchains/downloads/rustup-init.exe` and `.work/toolchains/downloads/rustup-init.exe.sha256`. The installer host can be MSVC; the command below explicitly selects the GNU compiler.
 
@@ -29,42 +29,31 @@ if ((Get-FileHash .work/toolchains/downloads/winlibs-gcc16.2.0.zip -Algorithm SH
 
 $env:RUSTUP_HOME = Join-Path $PWD '.work/toolchains/rustup'
 $env:CARGO_HOME = Join-Path $PWD '.work/toolchains/cargo'
-& .work/toolchains/downloads/rustup-init.exe -y --no-modify-path --default-host x86_64-pc-windows-gnu --default-toolchain 1.99.1 --profile minimal --component rust-docs
+& .work/toolchains/downloads/rustup-init.exe -y --no-modify-path --default-host x86_64-pc-windows-gnu --default-toolchain 1.99.1 --profile minimal
 if ($LASTEXITCODE -ne 0) { throw 'Rust installation failed' }
 Expand-Archive -LiteralPath .work/toolchains/downloads/winlibs-gcc16.2.0.zip -DestinationPath .work/toolchains/gcc16.2.0
 
 node scripts/cargo.mjs --version
 & .work/toolchains/gcc16.2.0/mingw64/bin/gcc.exe --version
-npm ci
 ```
 
-Rust documentation is included because release packaging copies its copyright and license notices. The compiler lives in `.work/toolchains/rustup/toolchains/1.99.1-x86_64-pc-windows-gnu`; the build also accepts older local checkouts with the same compiler installed under `stable-x86_64-pc-windows-gnu`, checking the exact Rust version before use. The scripts set the compiler paths for each child process. These tools and their caches remain ignored by Git.
+The compiler lives in `.work/toolchains/rustup/toolchains/1.99.1-x86_64-pc-windows-gnu`; the build also accepts older local checkouts with the same compiler installed under `stable-x86_64-pc-windows-gnu`, checking the exact Rust version before use. The scripts set the compiler paths for each child process. These tools and their caches remain ignored by Git.
 
 ## Linux x64 development
 
-Install Node 24.9–24.x and Rust 1.99.1 with your normal Rust installation (`rustup toolchain install 1.99.1 --profile minimal`). Install a C compiler and linker, for example Ubuntu's `build-essential`, for bundled SQLite. Then run `npm ci` and `npm test` from the repository root. No workspace-local toolchains are needed on Linux.
+Install the Node version in `.node-version` and Rust 1.99.1 with your normal Rust installation (`rustup toolchain install 1.99.1 --profile minimal`). Install a C compiler and linker, for example Ubuntu's `build-essential`, for bundled SQLite. Then run `node scripts/test-native.mjs` from the repository root. No workspace-local toolchains are needed on Linux.
 
 `scripts/cargo.mjs` verifies the pinned compiler and builds for the compiler's host target on Linux; Windows retains the workspace-local GNU/MinGW build. Test executables resolve through `scripts/lib/native-toolchain.mjs`, with `REVERIE_TEST_ENGINE` available for a separately built executable. Without that override, Linux path resolution uses `rustc` on PATH. Use the repository scripts on Windows; direct Cargo commands follow the user's default host toolchain.
 
-A Linux x64 workflow runs `npm test` on main pushes and pull requests, including TypeScript checking, locked Rust unit checks, native/process tests and Pi integration. One concurrency group per PR cancels superseded runs. Console reporters expose failures as they occur. Local test runs write ignored reports under `.work/validation`; CI sets `REVERIE_VALIDATION_DIR=.work/ci-validation`. Both preserve the tracked release evidence under `validation/`. Use `REVERIE_VALIDATION_DIR` to select another report directory, including `validation` when deliberately refreshing release evidence.
+## Build and verify
 
-Windows x64 remains the only shipped and verified Pi package platform. Linux support here covers development builds and automated integration tests; packaging a Linux engine and testing an installed Linux package are separate work.
-
-## Verify and package
+Run these commands from the repository root.
 
 ```text
-npm test
-npm run build
-npm run package
-npm run test:package
+node scripts/cargo.mjs build --release --locked
+node scripts/test-native.mjs
 ```
 
-The Pi tests run the real Pi SDK/session/extension machinery with a deterministic local model implementation and the real native executable. They exercise branch navigation, persona injection, cancelled date input, memorization, restart, and deletion. Pure source tests cover projection and alternate selection. Native suites verify chronology, provenance, stale-operation protection, cancellation, isolation and atomic publication.
+The tests run the Rust unit tests, build the release executable, and run the native and process suites against it. A test host implemented with Node built-ins supplies deterministic played source and model responses over the wire. `test/support/reflection.mjs` retains the golden-format oracle for prompt and source parity.
 
-Committed validation reports use repository-relative paths. The test runners normalize their JUnit output after every run, and the installed-package smoke records `dist/reverie-pi` without a machine-specific prefix. Keep credentials and real character data out of validation artifacts.
-
-The release directory is `dist/reverie-pi`. Test installation with `pi install` using that directory, or load it once with `pi -e`. Test homes must stay under `.work/` and must never overwrite a user's Pi settings or memories.
-
-If a running Pi holds the packaged engine open on Windows, set `REVERIE_PACKAGE_DIR` to a fresh directory such as `dist/reverie-pi-0.1.0` for the build, package and memory-wire smoke commands. This builds and validates a separate package without interrupting the active session. The relocated archive smoke reads the generated package report and needs no directory override.
-
-`test/support/reflection.mjs` is a retained golden-format oracle for native prompt/source parity. It is test-only, not a second production memory engine.
+Linux x64 CI runs the same suite on main pushes and pull requests. Local reports go to `.work/validation`. Set `REVERIE_VALIDATION_DIR` to select another directory.

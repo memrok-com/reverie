@@ -1,26 +1,20 @@
-# Reverie for Pi
+# Reverie
 
-Subjective memory for an RPG companion: recollections shaped by emotion, bias and fictional time, together with a sense of shared history.
+Reverie is a standalone Rust memory engine for roleplay. It gives characters selective recollections and subjective impressions that respect the story's chronology.
 
-**Experimental.** Memory mechanics are tested; sustained-play quality and broader platform support remain work in progress.
+A host supplies the played source and runs model-assisted reflection. Reverie stores the resulting memory in SQLite and retrieves relevant recollections locally. Hosts can launch the native executable over a JSON-lines connection. Rust hosts can also link the crate from source.
 
-Reverie is a **Pi extension with a bundled native Rust memory engine**. Pi owns the conversations and model connections; Reverie adds character setup, an in-terminal personality editor, story dates, memory controls, and saved reply alternatives.
-
-The current verified release supports **Pi 1.3.0, Windows x64 and Node 24.9–24.x**. Other platforms need a matching native build and verification; the package does not download executables during startup. npm registry publication is pending. The package name is `@memrok-com/reverie-pi`.
-
-Start with the [quickstart](docs/quickstart.md). The local installable directory is `dist/reverie-pi`; an npm archive is produced by `npm run package`. No Rust compiler, separate server, or Docker container is needed by a user.
-
-- [User controls](docs/user-controls.md)
-- [Story backup and restore](docs/story-backup.md)
-- [Architecture](docs/architecture.md)
-- [Development and verification](docs/development.md)
-- [Validation and limitations](docs/validation.md)
+- [Build and connect a host](docs/quickstart.md)
+- [Architecture and host responsibilities](docs/architecture.md)
+- [Development and tests](docs/development.md)
 - [Product vision](docs/product-vision.md)
 - [Ubiquitous language](docs/ubiquitous-language.md)
-- [Decisions](docs/open-decisions.md)
+- [Validation and limits](docs/validation.md)
 
-The earlier Node memory prototype and DSH adapter have been retired. Existing DSH user data is not modified or imported automatically: its conversation references belong to that host.
+## Earlier Pi integration
+
+The [last revision with the Pi extension](https://github.com/memrok-com/reverie/tree/518cb3e911e0fb5a056d7862179c2cae5b6d7c05) retains its installation and [story export instructions](https://github.com/memrok-com/reverie/blob/518cb3e911e0fb5a056d7862179c2cae5b6d7c05/docs/story-backup.md). Existing Pi stories can still be opened and exported with that version. The standalone engine takes episode source from its host. Importing a legacy story archive is a host responsibility.
 
 ## License
 
-Reverie's source code and documentation are licensed under [Apache-2.0](LICENSE). See [NOTICE](NOTICE) for attribution. Third-party components retain their own licenses; their notices are included in `third_party/` and bundled releases. Public source availability is separate from npm registry publication.
+Reverie's source code and documentation are licensed under [Apache-2.0](LICENSE). See [NOTICE](NOTICE) and [third_party](third_party/) for attribution.

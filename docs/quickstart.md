@@ -1,80 +1,31 @@
-# Playing with Reverie in Pi
+# Connect a host
 
-Reverie adds character roleplay and subjective memory to an existing Pi installation. The verified build is Windows x64, Pi 1.3.0, Node 24.9–24.x.
-
-Reverie is experimental and licensed under Apache-2.0. Release bundles include LICENSE, NOTICE, and third-party notices. The source repository is [memrok-com/reverie](https://github.com/memrok-com/reverie); npm registry publication is pending.
-
-## Install
-
-Keep the supplied release folder somewhere stable, then run:
-
-```powershell
-pi install C:\path\to\reverie-pi
-```
-
-Start Pi or run `/reload`. For development, the release directory is `dist/reverie-pi` after `npm run build`. An archive must be extracted before installing it as a local directory. Local package references point to that directory; moving or removing it breaks the reference. npm publication is pending, so the registry install spelling is not available yet.
-
-The engine starts automatically from the installed package. You do not configure an executable path or a second model provider. Installing the extension does not activate roleplay in unlinked folders.
-
-## Create or link a character
-
-1. Start Pi in the character's folder.
-2. Run `/reverie setup`.
-3. Create a character or choose an existing memory. The folder's name is suggested for a new character.
-4. Write this folder's personality in the multiline editor and save it as `CHARACTER.md` in the folder where you started Pi. An existing `CHARACTER.md` is offered as the draft.
-
-The association uses a stable character identity, so names do not act as database keys. Other folders may link to the same character and share its memory, while keeping their own `CHARACTER.md`. For example, use separate folders for the character's youth and later life. Their chats become episodes for that character. Linking includes the folder's personality editor; cancelling leaves the file and link unchanged. A folder's current link cannot change the owner of an existing chat; start `/new` when switching characters.
-
-Use `/reverie` or Ctrl+Alt+M for the menu. Edit `CHARACTER.md` in any text editor, or use `/reverie persona` to edit the same file through Pi. Saved changes apply to the next character reply without restarting. The file contains only the authored personality; Reverie adds its roleplay guidance and recalled memories when making a request. Missing, empty, oversized or unreadable files pause generation with recovery instructions. Pi detects external edits made while its editor is open and preserves them. Linked folders turn off Pi's coding tools; unlinking restores the original tool selection and keeps `CHARACTER.md`.
-
-Choose the model once with `/reverie model` (also available as **Model for this folder** in the menu). Subsequent explicit `/model` selections and thinking-level changes are saved automatically for this linked folder. The provider, model and thinking level are restored across new chats, resumed sessions, restart and `/reload`, without changing Pi's global defaults. The widget shows the active thinking level; memory formation uses it too. Unsupported thinking levels are adjusted to the model's capabilities. If the model becomes unavailable, generation pauses instead of falling back to another provider. Existing linked folders can initialize their saved choice with `/reverie model`.
-
-Reverie uses the selected model for reflection without copying its credentials to the memory engine. The widget identifies its provider and model so similarly named models such as `default` are distinguishable.
-
-## Play and remember
-
-Use one chat per episode. Set its fictional date with the menu or:
+Install the development tools for your platform using the [setup guide](development.md). From the repository root, build the native executable.
 
 ```text
-/reverie when 2010-01-01 The lighthouse
+node scripts/cargo.mjs build --release --locked
 ```
 
-If you write an opening message first, Reverie asks for the date before generation. Cancelling restores the opening text in the editor. A leading ISO date in the opening can establish the date directly. Dates are never inferred from the computer clock.
+The executable is under `engine/target/<host-target>/release/`. On Windows x64 the target is `x86_64-pc-windows-gnu` and the executable is `reverie-engine.exe`. The executable needs no Node or Rust installation to run.
 
-You can correct the date repeatedly before the first player message. Dated, unplayed chats are saved when you leave or close them and appear in Pi's `/resume`. Use **Episode chats** in the Reverie menu, or `/reverie chats`, to resume or delete episodes, including older date-only setups without a saved chat file.
-
-The widget above the composer shows the character, date, memory state, and selected reply. To remember the episode at its current ending:
+Launch it with a stable character ID and a writable SQLite path supplied by your host.
 
 ```text
-/reverie memorize
+reverie-engine --stdio --character mara --database ./mara.sqlite
 ```
 
-The command returns while memory formation runs, leaving cancellation available. A visible notice confirms completion or failure. Continuing and memorizing again replaces the episode's contribution from the full selected story. It does not count the same episode twice.
+Send one JSON object per line to standard input. For example, send a request to identify the process and check its protocol version.
 
-## Reply alternatives
+```json
+{"id":1,"method":"ping","params":{}}
+```
 
-- Ctrl+Alt+R: generate again from the latest user message, including after a failed first generation.
-- Ctrl+Alt+Left / Ctrl+Alt+Right: cycle existing alternatives.
-- `/reverie reroll`, `/reverie previous`, `/reverie next`: equivalent commands.
+Read the response from standard output. This build reports protocol version 1.
 
-Alternatives are Pi branches. Selection is saved so it survives restart. Only the selected branch is source for memorization. Alternative navigation does not summarize rejected replies into the selected story. Shortcuts are editable through `/reverie keys`; run `/reload` after saving changes. Conflicting terminal or Pi shortcuts may need remapping.
+```json
+{"id":1,"result":{"version":"0.1.0","characterId":"mara","protocol":1,"runtime":"rust"}}
+```
 
-## Memory and deletion
+Use `when` with an episode ID and fictional date to place the episode, then request `memorize` when the player explicitly asks to form memory. During memorization, the engine requests the played source and calls back for model reflection. A host must handle those callbacks while awaiting the response. Use `inspect` to read published memory or `retrieve` to select eligible context for a later episode.
 
-The menu provides inspection, recall explanation, enable/disable, linking, withdrawal, rebuild, cancellation, and deletion. Memory off pauses memory use and formation while keeping the personality active. Unlinking retains the stored character and memories.
-
-`/reverie delete` confirms deletion, opens a fresh chat, removes the old session file, and removes its memory contribution. Later dependent recollections and impressions are invalidated immediately without a model call. Rebuild forms them again from surviving included episodes.
-
-Deleting a known session through Pi's `/resume` picker or outside Pi is detected while Reverie is running, on startup, and before recall. Pending deletion cleanup is durable. When Pi is closed, cleanup happens the next time the extension runs. Absence is treated as deletion only for files whose identity was previously recorded; access errors are not interpreted as deletion.
-
-## Data and backups
-
-The personality lives in the startup folder's `CHARACTER.md` (UTF-8, nonempty, at most 100,000 characters). Reverie reads that exact folder; it does not search parent folders or use `.pi/SYSTEM.md` as the personality. Each played branch records its character foundation, so editing a local file does not rewrite earlier episodes or automatically regenerate memory. If `CHARACTER.md` is a symbolic link to an existing file, Pi's editor updates the target while preserving the link and existing file permissions. A missing link target must be repaired before saving.
-
-Opening an older catalog removes its obsolete personality column while retaining character identities and folder links. Old database prompt content is not imported into `CHARACTER.md`; save a local prompt before continuing in those folders.
-
-By default, Reverie stores character identities, folder links and memory in `catalog.sqlite` and `memory.sqlite` under `~/.pi/agent/reverie/`. `PI_CODING_AGENT_DIR` relocates that root together with Pi's agent directory. This data is outside the installed package and survives upgrades/removal. Close Pi before backing up the database files so their journals settle. Include the local `CHARACTER.md` files when making a manual backup; story ZIPs include the exporting folder's prompt.
-
-Pi owns the original session files. The catalog stores their paths and selected branch identities, not another transcript archive. Keep sessions for rebuilding. Pi normally stores them centrally by working directory; its `sessionDir` setting can place them inside a character folder.
-
-Existing DSH databases and chats are preserved. They are not silently connected to Pi: their source identities and host format differ.
+See the [host protocol](architecture.md) for envelopes and callbacks. The [native process tests](../test/process.test.mjs) exercise the full round trip with a deterministic model. A Rust host linking the crate directly can supply the same callbacks through [`Bridge`](../engine/src/engine.rs).

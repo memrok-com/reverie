@@ -15,7 +15,6 @@ function run(args, env = process.env) {
   if (report) sanitizeTestReport(report.slice('--test-reporter-destination='.length));
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
-run(['scripts/build-pi-tests.mjs']);
 run(['scripts/cargo.mjs', 'test', '--locked']);
 run(['scripts/cargo.mjs', 'build', '--release', '--locked']);
 run(['--test', '--test-reporter=spec', '--test-reporter-destination=stdout', '--test-reporter=junit', `--test-reporter-destination=${reportPath}`,

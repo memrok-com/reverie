@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   linux:
-    name: Linux x64 native and Pi tests
+    name: Linux x64 memory engine tests
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -26,12 +26,10 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: .node-version
-          cache: npm
       - name: Install pinned Rust
         run: rustup toolchain install 1.99.1 --profile minimal --no-self-update
-      - run: npm ci
-      - name: Typecheck, Rust unit tests, native process tests and Pi integration
-        run: npm test
+      - name: Rust unit tests and standalone process tests
+        run: node scripts/test-native.mjs
       - name: Show test reports after a failure
         if: failure()
         run: |
