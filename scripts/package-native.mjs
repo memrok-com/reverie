@@ -47,7 +47,7 @@ License and third-party attribution are included in LICENSE, NOTICE and notices/
 `);
 const temporaryArchive = resolve(staging, name + '.zip');
 run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
-  '$ErrorActionPreference = "Stop"; Compress-Archive -LiteralPath $env:REVERIE_PACKAGE_SOURCE -DestinationPath $env:REVERIE_PACKAGE_ARCHIVE -CompressionLevel Optimal'],
+  '$ErrorActionPreference = "Stop"; Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::CreateFromDirectory($env:REVERIE_PACKAGE_SOURCE, $env:REVERIE_PACKAGE_ARCHIVE, [System.IO.Compression.CompressionLevel]::Optimal, $true)'],
 { env: { ...process.env, REVERIE_PACKAGE_SOURCE: directory, REVERIE_PACKAGE_ARCHIVE: temporaryArchive } });
 const checksum = createHash('sha256').update(await readFile(temporaryArchive)).digest('hex');
 const temporaryChecksum = temporaryArchive + '.sha256';

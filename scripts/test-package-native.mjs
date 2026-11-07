@@ -17,7 +17,7 @@ const temporaryRoot = resolve(root, '.work/package-smoke');
 await mkdir(temporaryRoot, { recursive: true });
 const temporary = await mkdtemp(resolve(temporaryRoot, 'extracted-'));
 const extracted = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
-  '$ErrorActionPreference = "Stop"; Expand-Archive -LiteralPath $env:REVERIE_PACKAGE_ARCHIVE -DestinationPath $env:REVERIE_PACKAGE_EXTRACTED'],
+  '$ErrorActionPreference = "Stop"; Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::ExtractToDirectory($env:REVERIE_PACKAGE_ARCHIVE, $env:REVERIE_PACKAGE_EXTRACTED)'],
 { windowsHide: true, env: { ...process.env, REVERIE_PACKAGE_ARCHIVE: archive, REVERIE_PACKAGE_EXTRACTED: temporary }, encoding: 'utf8' });
 if (extracted.error || extracted.status !== 0) throw extracted.error ?? new Error(extracted.stderr);
 const directory = resolve(temporary, basename(archive, '.zip'));
