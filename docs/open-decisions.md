@@ -15,6 +15,7 @@
 
 ## Still open
 
+- Doxvelt's [scoped-audience handoff](doxvelt-scoped-audiences.md): ratification of primary/fallback projections, identity token rules and extension enablement. This is a conceptual host design, not an implemented engine feature.
 - Sustained-play quality and tuning of subjective recall.
 - Broader platform coverage and distribution of signed native binaries.
 - Fantasy calendars and a visual timeline.

@@ -2,6 +2,8 @@
 
 The Rust engine owns subjective memory, fictional chronology, reflection validation and retrieval. The host owns canonical transcripts and branch selection, character foundations, model configuration and credentials, and the player interface. The host supplies the source as each character experienced it and decides how to inject retrieved memory into the character's context.
 
+The [Doxvelt scoped-audience handoff](doxvelt-scoped-audiences.md) describes intended host authoring and character projections within this boundary. It is conceptual, not implemented behavior; its primary/fallback extension remains unratified.
+
 ## Native host protocol
 
 Launch `reverie-engine --stdio --character ID --database PATH` for the character whose memory the host needs. The engine accepts optional JSON settings through `--settings`. A Rust host can instead embed the engine and implement the [`Bridge`](../engine/src/engine.rs) trait for source and reflection.
