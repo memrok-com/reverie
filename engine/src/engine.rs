@@ -203,14 +203,12 @@ impl Reverie {
                 Ok(json!({"episodeId":id,"characterId":self.character_id}))
             }
             "retrieve" => Ok(serde_json::to_value(self.retrieve(&params)?)?),
-            "previewImport" => crate::transfer::preview(self, &params),
             "cancel" => Ok(json!({"cancelled":self.cancel()})),
-            "memorize" | "unmemorize" | "rebuild" | "importMemory" | "exportMemory" => {
-                match self.prepare_update(method, &params)? {
-                    PreparedUpdate::Current(value) => Ok(value),
-                    PreparedUpdate::Work(ticket) => self.finish_update(ticket),
-                }
-            }
+            "memorize" | "unmemorize" | "rebuild" | "importMemory" | "exportMemory"
+            | "previewImport" => match self.prepare_update_owned(method, params)? {
+                PreparedUpdate::Current(value) => Ok(value),
+                PreparedUpdate::Work(ticket) => self.finish_update(ticket),
+            },
             _ => Err(Error::new(
                 "UNKNOWN_METHOD",
                 "That memory operation is not supported.",
@@ -842,21 +840,44 @@ impl Reverie {
     }
 
     pub fn prepare_update(&self, kind: &str, params: &Value) -> Result<PreparedUpdate> {
+        self.prepare_update_inner(kind, params, true)
+    }
+
+    /// The process reader transfers ownership of large request payloads to the
+    /// worker rather than cloning or validating an archive on the reader.
+    pub fn prepare_update_owned(&self, kind: &str, params: Value) -> Result<PreparedUpdate> {
+        let mut prepared = self.prepare_update_inner(kind, &params, false)?;
+        if matches!(kind, "importMemory" | "exportMemory" | "previewImport")
+            && let PreparedUpdate::Work(ticket) = &mut prepared
+        {
+            ticket.transfer_params = Some(params);
+        }
+        Ok(prepared)
+    }
+
+    fn prepare_update_inner(
+        &self,
+        kind: &str,
+        params: &Value,
+        copy_transfer: bool,
+    ) -> Result<PreparedUpdate> {
         self.validate_params(params)?;
         if !matches!(
             kind,
-            "memorize" | "unmemorize" | "rebuild" | "importMemory" | "exportMemory"
+            "memorize"
+                | "unmemorize"
+                | "rebuild"
+                | "importMemory"
+                | "exportMemory"
+                | "previewImport"
         ) {
             return Err(Error::new(
                 "UNKNOWN_METHOD",
                 "That memory operation is not supported.",
             ));
         }
-        let transfer = matches!(kind, "importMemory" | "exportMemory");
-        if kind == "importMemory" {
-            crate::transfer::preview(self, params)?;
-        }
-        let target = if !matches!(kind, "rebuild" | "importMemory" | "exportMemory") {
+        let transfer = matches!(kind, "importMemory" | "exportMemory" | "previewImport");
+        let target = if kind != "rebuild" && !transfer {
             Some(required(params, "episodeId")?)
         } else {
             None
@@ -920,7 +941,7 @@ impl Reverie {
             kind: kind.into(),
             target: target.map(str::to_owned),
             force,
-            transfer_params: transfer.then(|| params.clone()),
+            transfer_params: (transfer && copy_transfer).then(|| params.clone()),
             model_key: model_key.into(),
             cancel: cancel.clone(),
             _guard: OperationGuard {
@@ -932,10 +953,10 @@ impl Reverie {
 
     pub fn finish_update(&self, ticket: UpdateTicket) -> Result<Value> {
         let result = if let Some(params) = &ticket.transfer_params {
-            if ticket.kind == "exportMemory" {
-                crate::transfer::export(self, &ticket.cancel)
-            } else {
-                crate::transfer::import(self, params, &ticket.cancel)
+            match ticket.kind.as_str() {
+                "exportMemory" => crate::transfer::export(self, &ticket.cancel),
+                "previewImport" => crate::transfer::preview(self, params, &ticket.cancel),
+                _ => crate::transfer::import(self, params, &ticket.cancel),
             }
         } else {
             self.update_inner(

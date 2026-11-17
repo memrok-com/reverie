@@ -18,6 +18,14 @@ Call `exportMemory` with `{}`. The result is `{archive, revision}`. The archive 
 fields in their canonical serialization. Treat this as an opaque JSON value;
 do not rewrite identities or recompute the checksum in a host.
 
+Contributions are stored in chronological order. In the archive only, a
+contribution's `dependencies` can be `{"prefix": N}`, referring to the first N
+contributions in that array. The engine expands this into the original episode
+IDs before checking `stateHash` or publishing. Sparse histories use an explicit
+array of dependency IDs, preserving their exact order. The normal complete
+preceding history therefore takes constant space per contribution on the wire;
+published contribution identities and hashes do not change.
+
 The engine calls `source.read` twice per episode and checks the memory revision
 before returning. Keep canonical source and branch selection stable throughout.
 A source callback can return `{deleted:true}`. Current source fingerprints are
@@ -35,7 +43,9 @@ archive. A memory archive contains fingerprints, not transcripts or credentials.
 3. Call `previewImport` with `{archive}`. It validates format, checksum,
    chronology, records and destination. Results include `status`, `revision`,
    `archiveHash`, counts, `pendingEpisodes` and `modelCalls: 0`. Preview makes no
-   callbacks and changes no data. Hosts can fully validate sources by importing
+   callbacks and changes no data. `pendingEpisodes` includes later included
+   episodes affected by a stale or missing earlier contribution, as inspection
+   does. Hosts can fully validate sources by importing
    into an isolated temporary database before offering their final import action.
 4. Call `importMemory` with `{archive, revision, archiveHash}` from that preview.
    Handle `source.read` callbacks. Source must match the archive's current-source
@@ -54,7 +64,10 @@ to supply engine settings; importing does not change retrieval configuration.
 
 ## Cancellation and recovery
 
-Export and import synchronously reserve the ordinary operation slot. Use `status`
+Export, preview and import synchronously reserve the ordinary operation slot.
+Archive decoding and validation run in the worker, keeping the protocol reader
+available for `status`, `cancel` and callback replies. A busy transfer request is
+rejected before archive decoding. Use `status`
 and `cancel`, and continue servicing the JSON-lines reader. Cancellation aborts
 outstanding callbacks. Cancellation before publication, callback failure, source
 drift, revision conflict and storage failure preserve previous memory.
@@ -66,6 +79,7 @@ response is lost, check or retry the exact operation before assuming failure.
 | Code | Host response |
 | --- | --- |
 | `UNSUPPORTED_ARCHIVE` | Use an engine supporting this archive version. |
+| `ARCHIVE_TOO_LARGE` | The story exceeds a transfer capacity limit; its memory is not corrupt. |
 | `INVALID_ARCHIVE` | Keep the original export; reject damaged or invalid records. |
 | `CHARACTER_MISMATCH` | Start the archive's character. |
 | `IMPORT_CONFLICT` | Choose an empty destination. |
@@ -75,5 +89,9 @@ response is lost, check or retry the exact operation before assuming failure.
 | `OPERATION_IN_PROGRESS` | Wait for or cancel the active operation. |
 | `CANCELLED` | Check host restore state and retry when requested. |
 
-Callback error codes propagate unchanged. Archives are limited to 64 MiB and
-10,000 episodes. Checksums detect corruption and are not author signatures.
+Callback error codes propagate unchanged. The two independent capacity limits are
+64 MiB of encoded JSON and 10,000 episodes; either can be reached first, depending
+on recollection lengths and explicit sparse dependencies. These are ceilings,
+not a promise that every story of 10,000 episodes fits. Oversized exports return
+`ARCHIVE_TOO_LARGE`, without changing saved memory. Checksums detect corruption
+and are not author signatures.

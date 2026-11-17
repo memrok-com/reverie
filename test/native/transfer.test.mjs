@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { MemoryClient } from '../support/memory-client.mjs';
 import { nativeEnginePath } from '../../scripts/lib/native-toolchain.mjs';
@@ -128,4 +128,82 @@ test('source and destination revisions are checked again after callbacks', async
   await started; await target.request('when', { episodeId: 'concurrent', position: '2005-01-01' }); release();
   await assert.rejects(operation, { code: 'STALE_OPERATION' });
   assert.equal((await target.request('status')).memories, 0);
+});
+
+test('preview carries an earlier stale source through later included episodes', async t => {
+  let edited = false;
+  const readSource = async id => ({ ...source(id), foundation: edited && id === 'first' ? 'Revised foundation.' : 'You are Mara.' });
+  const original = forming(t, { readSource });
+  await memorize(original, 'first'); await memorize(original, 'second', '2001-01-01');
+  await original.request('when', { episodeId: 'unplayed', position: '1999-01-01' });
+  edited = true;
+  const { archive } = await original.request('exportMemory');
+  const restored = client(t, { readSource });
+  const preview = await restored.request('previewImport', { archive });
+  assert.deepEqual(preview.pendingEpisodes, ['first', 'second']);
+  await restored.request('importMemory', { archive, revision: preview.revision, archiveHash: preview.archiveHash });
+  const inspection = await restored.request('inspect');
+  assert.deepEqual(inspection.episodes.filter(e => e.state === 'stale').map(e => e.episode.id), preview.pendingEpisodes);
+});
+
+const fingerprint = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+function scaleArchive(seed, count) {
+  const archive = { ...seed, episodes: [], contributions: [], sources: {}, checksum: '' };
+  const previous = [];
+  for (let index = 0; index < count; index++) {
+    const id = '00000000-0000-0000-0000-' + String(index).padStart(12, '0');
+    const at = Date.UTC(2000, 0, 1) + index * 86400000;
+    const observation = source(id);
+    const sourceHash = fingerprint({ messages: observation.messages, foundation: observation.foundation });
+    const contribution = { ...seed.contributions[0], episodeId: id, label: id, start: at, end: at, sourceHash,
+      dependencies: [...previous], memories: seed.contributions[0].memories.map(m => ({ ...m, sourceMessageIds: [id + ':u'] })),
+      impressions: seed.contributions[0].impressions.map(i => ({ ...i, sourceEpisodeIds: [id] })) };
+    // Match the engine's existing ordered-map swap removal, preserving the
+    // published state-hash contract rather than redefining it for the fixture.
+    const state = Object.entries(contribution);
+    for (const key of ['stateHash', 'reuseHash', 'modelKey']) {
+      const index = state.findIndex(([name]) => name === key);
+      if (index >= 0) { const last = state.pop(); if (index < state.length) state[index] = last; }
+    }
+    contribution.stateHash = fingerprint(Object.fromEntries(state));
+    contribution.dependencies = { prefix: index };
+    archive.contributions.push(contribution);
+    archive.episodes.push({ ...seed.episodes[0], id, label: id, start: at, now: at, source_hash: sourceHash, published_end: at });
+    archive.sources[id] = sourceHash;
+    previous.push(id);
+  }
+  const data = { ...archive }; delete data.checksum;
+  archive.checksum = fingerprint(data);
+  return archive;
+}
+
+test('2,000 UUID episodes round trip compactly while validation remains cancellable and the reader stays available', { timeout: 120000 }, async t => {
+  const original = forming(t); await memorize(original);
+  const seed = (await original.request('exportMemory')).archive;
+  const archive = scaleArchive(seed, 2000);
+  // Full dependency IDs alone would require over 64 MiB. Prefixes keep the
+  // entire archive small, while state hashes still bind the exact expanded IDs.
+  assert.ok(2000 * 1999 / 2 * 39 > 64 * 1024 * 1024);
+  const encodedBytes = Buffer.byteLength(JSON.stringify(archive));
+  assert.ok(encodedBytes < 5 * 1024 * 1024);
+  const restored = client(t);
+  for (const method of ['previewImport', 'importMemory']) {
+    const outcome = restored.request(method, { archive, revision: 0, archiveHash: archive.checksum }).then(value => ({ value }), error => ({ error }));
+    const status = await restored.request('status');
+    assert.equal(status.operation.kind, method);
+    await assert.rejects(restored.request('importMemory', { archive: null }), { code: 'OPERATION_IN_PROGRESS' });
+    await assert.rejects(restored.request('previewImport', { archive: null }), { code: 'OPERATION_IN_PROGRESS' });
+    assert.equal((await restored.request('cancel')).cancelled, true);
+    assert.equal((await outcome).error.code, 'CANCELLED');
+    assert.equal((await restored.request('status')).memories, 0);
+  }
+  const previewStarted = performance.now();
+  const preview = await restored.request('previewImport', { archive });
+  t.diagnostic(`2,000 episodes: ${encodedBytes} encoded bytes; preview ${Math.round(performance.now() - previewStarted)} ms.`);
+  assert.equal(preview.episodes, 2000); assert.deepEqual(preview.pendingEpisodes, []);
+  const imported = await restored.request('importMemory', { archive, revision: preview.revision, archiveHash: preview.archiveHash });
+  assert.equal(imported.status, 'imported');
+  const exported = await restored.request('exportMemory');
+  assert.deepEqual(exported.archive, archive);
+  assert.equal((await restored.request('retrieve', { at: '2010-01-01', cue: 'coat' })).memories.length, 6);
 });

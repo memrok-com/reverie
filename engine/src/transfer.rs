@@ -10,11 +10,12 @@ use crate::{
 use rusqlite::{TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 pub const FORMAT: &str = "reverie-memory";
 pub const VERSION: u32 = 1;
 pub const MAX_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_EPISODES: usize = 10_000;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -23,6 +24,7 @@ pub struct MemoryArchive {
     pub version: u32,
     pub character_id: String,
     pub episodes: Vec<Episode>,
+    #[serde(with = "dependency_encoding")]
     pub contributions: Vec<Contribution>,
     pub corrections: Vec<Correction>,
     /// Current source fingerprints, including null for deleted source. These
@@ -31,8 +33,79 @@ pub struct MemoryArchive {
     pub checksum: String,
 }
 
+// The native contribution keeps its original dependency IDs and state hash.
+// On the wire, the usual complete preceding history is a constant-size prefix
+// count. Sparse/legacy histories retain an explicit ID list in its exact order.
+mod dependency_encoding {
+    use super::*;
+    use serde::{Deserializer, Serializer, de::Error as _, ser::Error as _};
+
+    pub fn serialize<S: Serializer>(
+        items: &[Contribution],
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        let mut sequence = serializer.serialize_seq(Some(items.len()))?;
+        for (index, item) in items.iter().enumerate() {
+            let mut value = serde_json::to_value(item).map_err(S::Error::custom)?;
+            if item.dependencies.len() <= index
+                && item
+                    .dependencies
+                    .iter()
+                    .zip(items)
+                    .all(|(id, prior)| *id == prior.episode_id)
+            {
+                value["dependencies"] = json!({"prefix":item.dependencies.len()});
+            }
+            sequence.serialize_element(&value)?;
+        }
+        sequence.end()
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Vec<Contribution>, D::Error> {
+        let values = Vec::<Value>::deserialize(deserializer)?;
+        if values.len() > MAX_EPISODES {
+            return Err(D::Error::custom("Too many archived contributions."));
+        }
+        let mut items: Vec<Contribution> = Vec::with_capacity(values.len());
+        for mut value in values {
+            if let Some(object) = value.get("dependencies").and_then(Value::as_object) {
+                let count = object
+                    .get("prefix")
+                    .and_then(Value::as_u64)
+                    .filter(|count| object.len() == 1 && *count <= items.len() as u64)
+                    .ok_or_else(|| {
+                        D::Error::custom(
+                            "A dependency prefix must reference only preceding contributions.",
+                        )
+                    })? as usize;
+                value["dependencies"] = json!(
+                    items[..count]
+                        .iter()
+                        .map(|c| &c.episode_id)
+                        .collect::<Vec<_>>()
+                );
+            }
+            items.push(serde_json::from_value(value).map_err(D::Error::custom)?);
+        }
+        Ok(items)
+    }
+}
+
 fn invalid(message: &str) -> Error {
     Error::new("INVALID_ARCHIVE", message)
+}
+fn check_episode_limit(count: usize) -> Result<()> {
+    if count > MAX_EPISODES {
+        Err(Error::new(
+            "ARCHIVE_TOO_LARGE",
+            "Memory archive exceeds the 10,000-episode limit.",
+        ))
+    } else {
+        Ok(())
+    }
 }
 fn digest(archive: &MemoryArchive) -> Result<String> {
     let mut value = serde_json::to_value(archive)?;
@@ -101,11 +174,27 @@ fn validate_memories(memories: &[Memory], source: Option<&Source>) -> Result<()>
 
 /// Decode and validate all logical records before a host reviews an import.
 pub fn decode(value: &Value) -> Result<MemoryArchive> {
+    decode_cancellable(value, &Cancel::default())
+}
+fn decode_cancellable(value: &Value, cancel: &Cancel) -> Result<MemoryArchive> {
+    cancel.check()?;
     if serde_json::to_vec(value)?.len() > MAX_BYTES {
-        return Err(invalid("Memory archive exceeds 64 MiB."));
+        return Err(Error::new(
+            "ARCHIVE_TOO_LARGE",
+            "Memory archive exceeds the 64 MiB encoded-size limit.",
+        ));
     }
+    if let Some(episodes) = value.get("episodes").and_then(Value::as_array) {
+        check_episode_limit(episodes.len())?;
+    }
+    cancel.check()?;
     let archive: MemoryArchive =
         serde_json::from_value(value.clone()).map_err(|e| invalid(&e.to_string()))?;
+    validate_archive(&archive, cancel)?;
+    Ok(archive)
+}
+fn validate_archive(archive: &MemoryArchive, cancel: &Cancel) -> Result<()> {
+    cancel.check()?;
     if archive.format != FORMAT || archive.version != VERSION {
         return Err(Error::new(
             "UNSUPPORTED_ARCHIVE",
@@ -118,8 +207,8 @@ pub fn decode(value: &Value) -> Result<MemoryArchive> {
             "Memory archive checksum does not match its contents.",
         ));
     }
-    if archive.episodes.len() > 10_000
-        || archive.contributions.len() > archive.episodes.len()
+    check_episode_limit(archive.episodes.len())?;
+    if archive.contributions.len() > archive.episodes.len()
         || archive.corrections.len() > archive.episodes.len()
     {
         return Err(invalid("Memory archive record limits exceeded."));
@@ -127,6 +216,7 @@ pub fn decode(value: &Value) -> Result<MemoryArchive> {
     assert_intervals(&archive.episodes).map_err(|e| invalid(&e.message))?;
     let mut ids = HashSet::new();
     for episode in &archive.episodes {
+        cancel.check()?;
         identifier(&episode.id, "Episode identity")?;
         identifier(&episode.label, "Episode label")?;
         if !ids.insert(episode.id.as_str())
@@ -146,6 +236,16 @@ pub fn decode(value: &Value) -> Result<MemoryArchive> {
             return Err(invalid("Invalid episode fingerprints."));
         }
     }
+    let episodes: HashMap<_, _> = archive
+        .episodes
+        .iter()
+        .map(|e| (e.id.as_str(), e))
+        .collect();
+    let contributions: HashMap<_, _> = archive
+        .contributions
+        .iter()
+        .map(|c| (c.episode_id.as_str(), c))
+        .collect();
     if archive.sources.len() != ids.len()
         || archive
             .sources
@@ -157,15 +257,24 @@ pub fn decode(value: &Value) -> Result<MemoryArchive> {
         ));
     }
     let mut published = HashSet::new();
-    for item in &archive.contributions {
+    for (index, item) in archive.contributions.iter().enumerate() {
+        cancel.check()?;
         if let Some(model) = &item.model_key {
             identifier(model, "Model provenance")?;
         }
-        let episode = archive
-            .episodes
-            .iter()
-            .find(|e| e.id == item.episode_id)
+        let episode = episodes
+            .get(item.episode_id.as_str())
             .ok_or_else(|| invalid("A contribution has no episode."))?;
+        if index > 0
+            && (
+                archive.contributions[index - 1].start,
+                &archive.contributions[index - 1].episode_id,
+            ) >= (item.start, &item.episode_id)
+        {
+            return Err(invalid(
+                "Archived contributions must be in chronological order.",
+            ));
+        }
         if !published.insert(item.episode_id.as_str())
             || !episode.included
             || item.end < item.start
@@ -190,10 +299,9 @@ pub fn decode(value: &Value) -> Result<MemoryArchive> {
         let mut deps = HashSet::new();
         for id in &item.dependencies {
             if !deps.insert(id)
-                || !archive
-                    .contributions
-                    .iter()
-                    .any(|p| p.episode_id == *id && p.start < item.start)
+                || !contributions
+                    .get(id.as_str())
+                    .is_some_and(|p| p.start < item.start)
             {
                 return Err(invalid(
                     "A contribution dependency is missing or not earlier in the story.",
@@ -201,27 +309,23 @@ pub fn decode(value: &Value) -> Result<MemoryArchive> {
             }
         }
         validate_memories(&item.memories, None)?;
-        let allowed = item
-            .dependencies
-            .iter()
-            .cloned()
-            .chain(std::iter::once(item.episode_id.clone()))
-            .collect::<Vec<_>>();
+        let mut referenced = BTreeMap::new();
         let mut normalized = item.impressions.clone();
         for impression in &mut normalized {
             for id in &mut impression.source_episode_ids {
-                let index = allowed
-                    .iter()
-                    .position(|candidate| candidate == id)
-                    .ok_or_else(|| {
-                        invalid("An impression cites an episode outside its memory history.")
-                    })?;
-                *id = format!("archive-episode-{index}");
+                if *id != item.episode_id && !deps.contains(id) {
+                    return Err(invalid(
+                        "An impression cites an episode outside its memory history.",
+                    ));
+                }
+                let next = referenced.len();
+                *id = referenced
+                    .entry(id.clone())
+                    .or_insert_with(|| format!("archive-episode-{next}"))
+                    .clone();
             }
         }
-        let allowed = (0..allowed.len())
-            .map(|i| format!("archive-episode-{i}"))
-            .collect::<Vec<_>>();
+        let allowed = referenced.into_values().collect::<Vec<_>>();
         let source = Source {
             messages: vec![],
             foundation: String::new(),
@@ -243,6 +347,7 @@ pub fn decode(value: &Value) -> Result<MemoryArchive> {
     }
     let mut pins = HashSet::new();
     for pin in &archive.corrections {
+        cancel.check()?;
         if !ids.contains(pin.episode_id.as_str())
             || !pins.insert(&pin.episode_id)
             || !hash(&pin.source_hash)
@@ -252,7 +357,7 @@ pub fn decode(value: &Value) -> Result<MemoryArchive> {
         }
         validate_memories(&pin.memories, None)?;
     }
-    Ok(archive)
+    Ok(())
 }
 
 fn snapshot(engine: &Reverie) -> Result<(MemoryArchive, i64)> {
@@ -304,9 +409,16 @@ fn read_sources(
 }
 pub(crate) fn export(engine: &Reverie, cancel: &Cancel) -> Result<Value> {
     let (mut archive, revision) = snapshot(engine)?;
+    check_episode_limit(archive.episodes.len())?;
     archive.sources = read_sources(engine, &archive, cancel)?;
     archive.checksum = digest(&archive)?;
-    decode(&serde_json::to_value(&archive)?)?;
+    validate_archive(&archive, cancel)?;
+    if serde_json::to_vec(&archive)?.len() > MAX_BYTES {
+        return Err(Error::new(
+            "ARCHIVE_TOO_LARGE",
+            "Memory archive exceeds the 64 MiB encoded-size limit.",
+        ));
+    }
     if read_sources(engine, &archive, cancel)? != archive.sources {
         return Err(Error::new(
             "STALE_SOURCE",
@@ -329,11 +441,12 @@ pub(crate) fn export(engine: &Reverie, cancel: &Cancel) -> Result<Value> {
     }
     Ok(json!({"archive":archive,"revision":revision}))
 }
-fn incoming(engine: &Reverie, params: &Value) -> Result<MemoryArchive> {
-    let archive = decode(
+fn incoming(engine: &Reverie, params: &Value, cancel: &Cancel) -> Result<MemoryArchive> {
+    let archive = decode_cancellable(
         params
             .get("archive")
             .ok_or_else(|| invalid("Supply a memory archive."))?,
+        cancel,
     )?;
     if archive.character_id != engine.character_id {
         return Err(Error::new(
@@ -361,31 +474,38 @@ fn target(engine: &Reverie, archive: &MemoryArchive) -> Result<(i64, bool)> {
     }
     Ok((revision, false))
 }
-pub(crate) fn preview(engine: &Reverie, params: &Value) -> Result<Value> {
-    let archive = incoming(engine, params)?;
+pub(crate) fn preview(engine: &Reverie, params: &Value, cancel: &Cancel) -> Result<Value> {
+    let archive = incoming(engine, params, cancel)?;
     let (revision, current) = target(engine, &archive)?;
-    let pending = archive
-        .episodes
+    let contributions: HashMap<_, _> = archive
+        .contributions
         .iter()
-        .filter(|e| {
-            e.included
-                && !archive.contributions.iter().any(|c| {
-                    c.episode_id == e.id
-                        && c.start == e.start
-                        && c.end == e.now
-                        && c.label == e.label
-                        && archive.sources.get(&e.id).and_then(Option::as_ref)
-                            == Some(&c.source_hash)
-                })
-        })
-        .map(|e| &e.id)
-        .collect::<Vec<_>>();
+        .map(|c| (c.episode_id.as_str(), c))
+        .collect();
+    let mut ordered = archive.episodes.iter().collect::<Vec<_>>();
+    ordered.sort_by(|a, b| a.start.cmp(&b.start).then(a.id.cmp(&b.id)));
+    let mut stale_prefix = false;
+    let mut pending = Vec::new();
+    for e in ordered {
+        cancel.check()?;
+        if e.included {
+            stale_prefix |= contributions.get(e.id.as_str()).is_none_or(|c| {
+                c.start != e.start
+                    || c.end != e.now
+                    || c.label != e.label
+                    || archive.sources.get(&e.id).and_then(Option::as_ref) != Some(&c.source_hash)
+            });
+            if stale_prefix {
+                pending.push(&e.id);
+            }
+        }
+    }
     Ok(
         json!({"status":if current {"current"} else {"ready"},"revision":revision,"archiveHash":archive.checksum,"episodes":archive.episodes.len(),"contributions":archive.contributions.len(),"memories":archive.contributions.iter().map(|c|c.memories.len()).sum::<usize>(),"corrections":archive.corrections.len(),"pendingEpisodes":pending,"modelCalls":0}),
     )
 }
 pub(crate) fn import(engine: &Reverie, params: &Value, cancel: &Cancel) -> Result<Value> {
-    let archive = incoming(engine, params)?;
+    let archive = incoming(engine, params, cancel)?;
     let expected = params
         .get("revision")
         .and_then(Value::as_i64)
@@ -603,6 +723,54 @@ mod tests {
         );
         target.execute("importMemory", request).unwrap();
     }
+    #[test]
+    fn dependency_prefixes_preserve_exact_ids_hashes_and_sparse_histories() {
+        let mut archive: MemoryArchive = serde_json::from_value(archive()).unwrap();
+        let mut second = archive.contributions[0].clone();
+        second.episode_id = "second".into();
+        second.start += crate::time::DAY;
+        second.end = second.start;
+        second.dependencies = vec!["meeting".into()];
+        let mut third = second.clone();
+        third.episode_id = "third".into();
+        third.start += crate::time::DAY;
+        third.end = third.start;
+        third.dependencies = vec!["second".into()];
+        archive.contributions.extend([second, third]);
+        let encoded = serde_json::to_value(&archive).unwrap();
+        assert_eq!(
+            encoded["contributions"][0]["dependencies"],
+            json!({"prefix":0})
+        );
+        assert_eq!(
+            encoded["contributions"][1]["dependencies"],
+            json!({"prefix":1})
+        );
+        assert_eq!(
+            encoded["contributions"][2]["dependencies"],
+            json!(["second"])
+        );
+        let decoded: MemoryArchive = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded.contributions, archive.contributions);
+        let mut malformed = serde_json::to_value(&archive).unwrap();
+        malformed["contributions"][0]["dependencies"] = json!({"prefix":1});
+        assert_eq!(decode(&malformed).err().unwrap().code, "INVALID_ARCHIVE");
+        malformed["contributions"][0]["dependencies"] = json!({"prefix":0,"extra":true});
+        assert_eq!(decode(&malformed).err().unwrap().code, "INVALID_ARCHIVE");
+    }
+
+    #[test]
+    fn archive_capacity_errors_are_distinct_from_corruption() {
+        let oversized = json!({"payload":"x".repeat(MAX_BYTES)});
+        assert_eq!(decode(&oversized).err().unwrap().code, "ARCHIVE_TOO_LARGE");
+        drop(oversized);
+        let too_many_episodes = json!({"episodes":vec![Value::Null;10_001]});
+        assert_eq!(
+            decode(&too_many_episodes).err().unwrap().code,
+            "ARCHIVE_TOO_LARGE"
+        );
+    }
+
     #[test]
     fn canonical_message_ids_that_resemble_model_aliases_are_not_remapped() {
         let memory = Memory {
