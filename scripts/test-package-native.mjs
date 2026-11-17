@@ -31,7 +31,7 @@ assert.ok(version.stdout.includes(`Reverie ${releaseVersion} native memory engin
 const probe = spawnSync(executable, ['--storage-probe'], { env: runtimeEnv, encoding: 'utf8', windowsHide: true });
 assert.equal(probe.status, 0, probe.stderr);
 assert.match(probe.stdout, /cedar coat/);
-const tests = spawnSync(process.execPath, ['--test', 'test/process.test.mjs'], {
+const tests = spawnSync(process.execPath, ['--test', 'test/process.test.mjs', 'test/native/transfer.test.mjs'], {
   cwd: root, windowsHide: true, stdio: 'inherit',
   env: { ...runtimeEnv, REVERIE_TEST_ENGINE: executable },
 });
