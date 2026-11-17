@@ -147,6 +147,26 @@ test('preview carries an earlier stale source through later included episodes', 
 });
 
 const fingerprint = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+test('small compact archives exceeding decoded dependency capacity reject safely and release the operation slot', async t => {
+  const original = forming(t); await memorize(original);
+  const seed = (await original.request('exportMemory')).archive;
+  const restored = client(t);
+  for (const [count, width] of [[10000, 64], [3000, 512]]) {
+    const archive = { ...seed, checksum: 'deliberately invalid', contributions: Array.from({ length: count }, (_, index) => ({
+      ...seed.contributions[0], episodeId: String(index).padStart(width, 'x'), dependencies: { prefix: index }
+    })) };
+    assert.ok(Buffer.byteLength(JSON.stringify(archive)) < 64 * 1024 * 1024);
+    for (const method of ['previewImport', 'importMemory']) {
+      await assert.rejects(restored.request(method, { archive, revision: 0, archiveHash: archive.checksum }), { code: 'ARCHIVE_TOO_LARGE' });
+      const status = await restored.request('status');
+      assert.equal(status.memories, 0); assert.deepEqual(status.episodes, []); assert.equal(status.operation, null);
+    }
+  }
+  // The same process can still import a legitimate archive after rejecting it.
+  await restored.request('importMemory', await importParams(restored, seed));
+  assert.deepEqual((await restored.request('exportMemory')).archive, seed);
+});
+
 function scaleArchive(seed, count) {
   const archive = { ...seed, episodes: [], contributions: [], sources: {}, checksum: '' };
   const previous = [];

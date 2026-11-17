@@ -16,6 +16,86 @@ pub const FORMAT: &str = "reverie-memory";
 pub const VERSION: u32 = 1;
 pub const MAX_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_EPISODES: usize = 10_000;
+/// Independent decoded limits, shared by compact and explicit dependencies.
+pub const MAX_DEPENDENCIES: usize = 4_000_000;
+pub const MAX_DEPENDENCY_BYTES: usize = 128 * 1024 * 1024;
+
+#[derive(Default)]
+struct DependencyBudget {
+    entries: usize,
+    bytes: usize,
+}
+impl DependencyBudget {
+    fn include(&mut self, entries: usize, bytes: usize) -> Result<()> {
+        self.entries = self.entries.saturating_add(entries);
+        self.bytes = self.bytes.saturating_add(bytes);
+        if self.entries > MAX_DEPENDENCIES || self.bytes > MAX_DEPENDENCY_BYTES {
+            return Err(Error::new(
+                "ARCHIVE_TOO_LARGE",
+                "Memory archive exceeds the decoded dependency limit (4,000,000 IDs or 128 MiB of UTF-8 identity text).",
+            ));
+        }
+        Ok(())
+    }
+}
+fn dependency_prefix(value: &Value, preceding: usize) -> Result<usize> {
+    value
+        .as_object()
+        .filter(|object| object.len() == 1)
+        .and_then(|object| object.get("prefix"))
+        .and_then(Value::as_u64)
+        .filter(|count| *count <= preceding as u64)
+        .map(|count| count as usize)
+        .ok_or_else(|| invalid("A dependency prefix must reference only preceding contributions."))
+}
+/// Inspect the complete encoded collection before cloning even the first
+/// expanded ID. Prefix byte totals refer to the original IDs, not their count
+/// alone; explicit lists consume the same cumulative budget.
+fn check_encoded_dependencies(values: &[Value], cancel: &Cancel) -> Result<()> {
+    check_episode_limit(values.len())?;
+    let mut budget = DependencyBudget::default();
+    let mut prefix_bytes = Vec::with_capacity(values.len() + 1);
+    prefix_bytes.push(0usize);
+    for (index, value) in values.iter().enumerate() {
+        cancel.check()?;
+        let dependencies = &value["dependencies"];
+        if dependencies.is_object() {
+            let count = dependency_prefix(dependencies, index)?;
+            budget.include(count, prefix_bytes[count])?;
+        } else {
+            let dependencies = dependencies
+                .as_array()
+                .ok_or_else(|| invalid("Archived dependencies must be an ID array or prefix."))?;
+            let mut bytes = 0usize;
+            for id in dependencies {
+                bytes = bytes.saturating_add(
+                    id.as_str()
+                        .ok_or_else(|| invalid("Archived dependency identities must be strings."))?
+                        .len(),
+                );
+            }
+            budget.include(dependencies.len(), bytes)?;
+        }
+        let id = value["episodeId"]
+            .as_str()
+            .ok_or_else(|| invalid("An archived contribution must identify its episode."))?;
+        prefix_bytes.push(prefix_bytes[index].saturating_add(id.len()));
+    }
+    Ok(())
+}
+fn check_decoded_dependencies(items: &[Contribution], cancel: &Cancel) -> Result<()> {
+    let mut budget = DependencyBudget::default();
+    for item in items {
+        cancel.check()?;
+        budget.include(
+            item.dependencies.len(),
+            item.dependencies
+                .iter()
+                .fold(0usize, |bytes, id| bytes.saturating_add(id.len())),
+        )?;
+    }
+    Ok(())
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -66,29 +146,27 @@ mod dependency_encoding {
         deserializer: D,
     ) -> std::result::Result<Vec<Contribution>, D::Error> {
         let values = Vec::<Value>::deserialize(deserializer)?;
-        if values.len() > MAX_EPISODES {
-            return Err(D::Error::custom("Too many archived contributions."));
-        }
+        check_encoded_dependencies(&values, &Cancel::default()).map_err(D::Error::custom)?;
         let mut items: Vec<Contribution> = Vec::with_capacity(values.len());
         for mut value in values {
-            if let Some(object) = value.get("dependencies").and_then(Value::as_object) {
-                let count = object
-                    .get("prefix")
-                    .and_then(Value::as_u64)
-                    .filter(|count| object.len() == 1 && *count <= items.len() as u64)
-                    .ok_or_else(|| {
-                        D::Error::custom(
-                            "A dependency prefix must reference only preceding contributions.",
-                        )
-                    })? as usize;
-                value["dependencies"] = json!(
-                    items[..count]
-                        .iter()
-                        .map(|c| &c.episode_id)
-                        .collect::<Vec<_>>()
-                );
+            let prefix = if value["dependencies"].is_object() {
+                let count = dependency_prefix(&value["dependencies"], items.len())
+                    .map_err(D::Error::custom)?;
+                value["dependencies"] = json!([]);
+                Some(count)
+            } else {
+                None
+            };
+            let mut item: Contribution = serde_json::from_value(value).map_err(D::Error::custom)?;
+            if let Some(count) = prefix {
+                // Expand straight into the native strings. An intermediate
+                // Value::String array would retain a second expanded copy.
+                item.dependencies = items[..count]
+                    .iter()
+                    .map(|c| c.episode_id.clone())
+                    .collect();
             }
-            items.push(serde_json::from_value(value).map_err(D::Error::custom)?);
+            items.push(item);
         }
         Ok(items)
     }
@@ -187,6 +265,9 @@ fn decode_cancellable(value: &Value, cancel: &Cancel) -> Result<MemoryArchive> {
     if let Some(episodes) = value.get("episodes").and_then(Value::as_array) {
         check_episode_limit(episodes.len())?;
     }
+    if let Some(contributions) = value.get("contributions").and_then(Value::as_array) {
+        check_encoded_dependencies(contributions, cancel)?;
+    }
     cancel.check()?;
     let archive: MemoryArchive =
         serde_json::from_value(value.clone()).map_err(|e| invalid(&e.to_string()))?;
@@ -195,6 +276,7 @@ fn decode_cancellable(value: &Value, cancel: &Cancel) -> Result<MemoryArchive> {
 }
 fn validate_archive(archive: &MemoryArchive, cancel: &Cancel) -> Result<()> {
     cancel.check()?;
+    check_decoded_dependencies(&archive.contributions, cancel)?;
     if archive.format != FORMAT || archive.version != VERSION {
         return Err(Error::new(
             "UNSUPPORTED_ARCHIVE",
@@ -410,6 +492,7 @@ fn read_sources(
 pub(crate) fn export(engine: &Reverie, cancel: &Cancel) -> Result<Value> {
     let (mut archive, revision) = snapshot(engine)?;
     check_episode_limit(archive.episodes.len())?;
+    check_decoded_dependencies(&archive.contributions, cancel)?;
     archive.sources = read_sources(engine, &archive, cancel)?;
     archive.checksum = digest(&archive)?;
     validate_archive(&archive, cancel)?;
@@ -767,6 +850,83 @@ mod tests {
         let too_many_episodes = json!({"episodes":vec![Value::Null;10_001]});
         assert_eq!(
             decode(&too_many_episodes).err().unwrap().code,
+            "ARCHIVE_TOO_LARGE"
+        );
+    }
+
+    #[test]
+    fn compact_dependency_bombs_are_rejected_before_expansion_or_checksum_validation() {
+        let seed = archive();
+        for (count, width) in [(10_000, 8), (10_000, 64), (3_000, 512)] {
+            let mut crafted = seed.clone();
+            crafted["checksum"] = json!("deliberately invalid");
+            crafted["contributions"] = json!(
+                (0..count)
+                    .map(|index| {
+                        let mut item = seed["contributions"][0].clone();
+                        item["episodeId"] = json!(format!("{index:05}{}", "x".repeat(width - 5)));
+                        item["dependencies"] = json!({"prefix":index});
+                        item
+                    })
+                    .collect::<Vec<_>>()
+            );
+            assert!(serde_json::to_vec(&crafted).unwrap().len() < MAX_BYTES);
+            assert_eq!(decode(&crafted).err().unwrap().code, "ARCHIVE_TOO_LARGE");
+            // The public serde entry point also preflights the complete array.
+            let error = serde_json::from_value::<MemoryArchive>(crafted)
+                .err()
+                .unwrap();
+            assert!(error.to_string().contains("ARCHIVE_TOO_LARGE"));
+        }
+    }
+
+    #[test]
+    fn dependency_budget_counts_explicit_lists_and_actual_utf8_prefix_bytes_together() {
+        let id = "界".repeat(170); // 170 UTF-16 units, but 510 UTF-8 bytes.
+        let values: Vec<_> = (0..1_100)
+            .map(|index| {
+                json!({"episodeId":format!("{index:04}{id}"),"dependencies":if index%2==0 {
+                json!({"prefix":index})
+            } else { json!([id]) }})
+            })
+            .collect();
+        assert_eq!(
+            check_encoded_dependencies(&values, &Cancel::default())
+                .unwrap_err()
+                .code,
+            "ARCHIVE_TOO_LARGE"
+        );
+        // Compact prefixes consume 134,003,712 bytes. The explicit list fills
+        // the remaining 214,016 bytes exactly; one more ID must reject it.
+        let mut mixed: Vec<_> = (0..724).map(|index| {
+            json!({"episodeId":format!("{index:0512}"),"dependencies":{"prefix":index}})
+        }).collect();
+        mixed.push(json!({"episodeId":"last","dependencies":vec!["x".repeat(512);418]}));
+        check_encoded_dependencies(&mixed, &Cancel::default()).unwrap();
+        mixed.last_mut().unwrap()["dependencies"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!("x".repeat(512)));
+        assert_eq!(
+            check_encoded_dependencies(&mixed, &Cancel::default())
+                .unwrap_err()
+                .code,
+            "ARCHIVE_TOO_LARGE"
+        );
+        // Inclusive limits and arithmetic overflow must not bypass either cap.
+        let mut budget = DependencyBudget::default();
+        budget
+            .include(MAX_DEPENDENCIES, MAX_DEPENDENCY_BYTES)
+            .unwrap();
+        assert_eq!(budget.include(1, 0).unwrap_err().code, "ARCHIVE_TOO_LARGE");
+        let mut budget = DependencyBudget::default();
+        budget.include(0, MAX_DEPENDENCY_BYTES).unwrap();
+        assert_eq!(budget.include(0, 1).unwrap_err().code, "ARCHIVE_TOO_LARGE");
+        assert_eq!(
+            DependencyBudget::default()
+                .include(usize::MAX, usize::MAX)
+                .unwrap_err()
+                .code,
             "ARCHIVE_TOO_LARGE"
         );
     }

@@ -21,8 +21,9 @@ do not rewrite identities or recompute the checksum in a host.
 Contributions are stored in chronological order. In the archive only, a
 contribution's `dependencies` can be `{"prefix": N}`, referring to the first N
 contributions in that array. The engine expands this into the original episode
-IDs before checking `stateHash` or publishing. Sparse histories use an explicit
-array of dependency IDs, preserving their exact order. The normal complete
+IDs before checking `stateHash` or publishing. Before expansion, the complete
+dependency collection is checked against the decoded limits below. Sparse
+histories use an explicit array of dependency IDs, preserving their exact order. The normal complete
 preceding history therefore takes constant space per contribution on the wire;
 published contribution identities and hashes do not change.
 
@@ -89,9 +90,13 @@ response is lost, check or retry the exact operation before assuming failure.
 | `OPERATION_IN_PROGRESS` | Wait for or cancel the active operation. |
 | `CANCELLED` | Check host restore state and retry when requested. |
 
-Callback error codes propagate unchanged. The two independent capacity limits are
-64 MiB of encoded JSON and 10,000 episodes; either can be reached first, depending
-on recollection lengths and explicit sparse dependencies. These are ceilings,
-not a promise that every story of 10,000 episodes fits. Oversized exports return
-`ARCHIVE_TOO_LARGE`, without changing saved memory. Checksums detect corruption
-and are not author signatures.
+Callback error codes propagate unchanged. Transfer has four independent capacity
+limits: 64 MiB of encoded JSON, 10,000 episodes, 4,000,000 decoded dependency IDs,
+and 128 MiB of UTF-8 text across those decoded IDs. Compact prefixes and explicit
+lists share the same cumulative dependency limits, checked before any prefix
+expansion or checksum validation. Export enforces the same decoded limits so an
+export it returns fits the decoder's dependency budget. Which limit is reached
+first depends on recollection lengths, identity lengths and dependency history.
+These are ceilings, not a promise that every story of 10,000 episodes fits.
+Oversized transfers return `ARCHIVE_TOO_LARGE`, without changing saved memory.
+Checksums detect corruption and are not author signatures.
