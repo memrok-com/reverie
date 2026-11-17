@@ -200,7 +200,10 @@ pub fn serve(character_id: String, database: &Path, settings: Settings) -> Resul
             continue;
         };
         let params = message.get("params").cloned().unwrap_or_else(|| json!({}));
-        if matches!(method, "memorize" | "unmemorize" | "rebuild") {
+        if matches!(
+            method,
+            "memorize" | "unmemorize" | "rebuild" | "importMemory" | "exportMemory"
+        ) {
             // Reserve synchronously, so even an immediately following cancel sees the queued operation.
             match engine.prepare_update(method, &params) {
                 Ok(PreparedUpdate::Current(value)) => wire.response(id, Ok(value)),
