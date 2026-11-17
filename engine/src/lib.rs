@@ -6,6 +6,7 @@ pub mod protocol;
 pub mod reflection;
 pub mod store;
 pub mod time;
+pub mod transfer;
 
 /// A real linked SQLite/FTS5 probe, kept small while the engine migration lands.
 pub fn storage_probe() -> rusqlite::Result<String> {

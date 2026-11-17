@@ -29,6 +29,8 @@ An episode's interval includes its fictional time jumps. Episode intervals canno
 
 ## Formation, retrieval and inspection
 
+Hosts can use `exportMemory`, `previewImport` and `importMemory` to preserve exact published memory alongside their own story archives. See [memory export and restore](memory-transfer.md) for source callbacks, validation, cancellation and atomic recovery.
+
 `memorize` forms an episode's contribution explicitly. `unmemorize` withdraws it and keeps the transcript with the host. Ordinary `rebuild` repairs changed or invalidated contributions and reuses unchanged ones. Use `force: true` to deliberately regenerate all included episodes. The engine stages results and validates source, dependencies and database revisions before publishing. Failure or cancellation preserves previously published memory.
 
 Contributions retain their original model route as `modelKey` provenance. A separate `reuseHash` validates reflection version, source, interval, label, preceding memory and relevant settings independently of that route. Legacy contributions can acquire this metadata without resampling when their old fingerprint matches the requested route. An unknown original route triggers a conservative refresh. Metadata adoption leaves published identities and correction prefixes intact.

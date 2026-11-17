@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Memory {
     pub gist: String,
     #[serde(default)]
@@ -17,14 +17,14 @@ pub struct Memory {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Impression {
     pub text: String,
     pub source_episode_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Contribution {
     pub episode_id: String,
     pub label: String,
@@ -45,7 +45,7 @@ pub struct Contribution {
 
 /// A reviewed episode snapshot, kept separately from generated contributions.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Correction {
     pub episode_id: String,
     pub source_hash: String,
@@ -54,6 +54,7 @@ pub struct Correction {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Episode {
     pub id: String,
     pub label: String,

@@ -42,7 +42,7 @@ pub trait Bridge: Send + Sync {
 }
 
 #[derive(Clone, Serialize)]
-struct Operation {
+pub(crate) struct Operation {
     kind: String,
     stage: String,
     completed: usize,
@@ -76,6 +76,7 @@ pub struct UpdateTicket {
     target: Option<String>,
     model_key: String,
     force: bool,
+    transfer_params: Option<Value>,
     cancel: Cancel,
     _guard: OperationGuard,
 }
@@ -85,7 +86,7 @@ pub struct Reverie {
     pub settings: Settings,
     pub(crate) store: Mutex<MemoryStore>,
     bridge: Arc<dyn Bridge>,
-    operation: Arc<Mutex<Option<Operation>>>,
+    pub(crate) operation: Arc<Mutex<Option<Operation>>>,
     correction_preview: Mutex<Option<Value>>,
     redate_preview: Mutex<Option<Value>>,
 }
@@ -203,7 +204,8 @@ impl Reverie {
             }
             "retrieve" => Ok(serde_json::to_value(self.retrieve(&params)?)?),
             "cancel" => Ok(json!({"cancelled":self.cancel()})),
-            "memorize" | "unmemorize" | "rebuild" => match self.prepare_update(method, &params)? {
+            "memorize" | "unmemorize" | "rebuild" | "importMemory" | "exportMemory"
+            | "previewImport" => match self.prepare_update_owned(method, params)? {
                 PreparedUpdate::Current(value) => Ok(value),
                 PreparedUpdate::Work(ticket) => self.finish_update(ticket),
             },
@@ -822,7 +824,7 @@ impl Reverie {
         }
     }
 
-    fn read_source(&self, episode: &str, cancel: &Cancel) -> Result<Option<Source>> {
+    pub(crate) fn read_source(&self, episode: &str, cancel: &Cancel) -> Result<Option<Source>> {
         cancel.check()?;
         self.store
             .lock()
@@ -838,14 +840,44 @@ impl Reverie {
     }
 
     pub fn prepare_update(&self, kind: &str, params: &Value) -> Result<PreparedUpdate> {
+        self.prepare_update_inner(kind, params, true)
+    }
+
+    /// The process reader transfers ownership of large request payloads to the
+    /// worker rather than cloning or validating an archive on the reader.
+    pub fn prepare_update_owned(&self, kind: &str, params: Value) -> Result<PreparedUpdate> {
+        let mut prepared = self.prepare_update_inner(kind, &params, false)?;
+        if matches!(kind, "importMemory" | "exportMemory" | "previewImport")
+            && let PreparedUpdate::Work(ticket) = &mut prepared
+        {
+            ticket.transfer_params = Some(params);
+        }
+        Ok(prepared)
+    }
+
+    fn prepare_update_inner(
+        &self,
+        kind: &str,
+        params: &Value,
+        copy_transfer: bool,
+    ) -> Result<PreparedUpdate> {
         self.validate_params(params)?;
-        if !matches!(kind, "memorize" | "unmemorize" | "rebuild") {
+        if !matches!(
+            kind,
+            "memorize"
+                | "unmemorize"
+                | "rebuild"
+                | "importMemory"
+                | "exportMemory"
+                | "previewImport"
+        ) {
             return Err(Error::new(
                 "UNKNOWN_METHOD",
                 "That memory operation is not supported.",
             ));
         }
-        let target = if kind != "rebuild" {
+        let transfer = matches!(kind, "importMemory" | "exportMemory" | "previewImport");
+        let target = if kind != "rebuild" && !transfer {
             Some(required(params, "episodeId")?)
         } else {
             None
@@ -909,6 +941,7 @@ impl Reverie {
             kind: kind.into(),
             target: target.map(str::to_owned),
             force,
+            transfer_params: (transfer && copy_transfer).then(|| params.clone()),
             model_key: model_key.into(),
             cancel: cancel.clone(),
             _guard: OperationGuard {
@@ -919,13 +952,21 @@ impl Reverie {
     }
 
     pub fn finish_update(&self, ticket: UpdateTicket) -> Result<Value> {
-        let result = self.update_inner(
-            &ticket.kind,
-            ticket.target.as_deref(),
-            ticket.force,
-            &ticket.model_key,
-            &ticket.cancel,
-        );
+        let result = if let Some(params) = &ticket.transfer_params {
+            match ticket.kind.as_str() {
+                "exportMemory" => crate::transfer::export(self, &ticket.cancel),
+                "previewImport" => crate::transfer::preview(self, params, &ticket.cancel),
+                _ => crate::transfer::import(self, params, &ticket.cancel),
+            }
+        } else {
+            self.update_inner(
+                &ticket.kind,
+                ticket.target.as_deref(),
+                ticket.force,
+                &ticket.model_key,
+                &ticket.cancel,
+            )
+        };
         if result.is_err() && ticket.cancel.is_cancelled() {
             ticket.cancel.check()?;
         }

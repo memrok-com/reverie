@@ -6,6 +6,7 @@ A host supplies the played source and runs model-assisted reflection. Reverie st
 
 - [Build and connect a host](docs/quickstart.md)
 - [Architecture and host responsibilities](docs/architecture.md)
+- [Export and restore memory through a host](docs/memory-transfer.md)
 - [Development and tests](docs/development.md)
 - [Product vision](docs/product-vision.md)
 - [Ubiquitous language](docs/ubiquitous-language.md)
