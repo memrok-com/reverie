@@ -37,4 +37,6 @@ Contributions retain their original model route as `modelKey` provenance. A sepa
 
 `retrieve` selects chronologically eligible memory without a model call. The current episode's previous contribution is excluded. `inspect` returns published contributions and separate eligibility flags without retrieval ranking. Correction previews and application bind reviewed recollections to source and prior-memory fingerprints. See [memory inspection and correction](memory-inspection.md) and [recall history](recall-history.md).
 
+`inspectEpisode` requires `episodeId` and returns only `{characterId, episodeId, revision, state, memories}` for that episode. It reads scoped saved data and checks published source with at most one target `source.read`, without model calls. Unconfirmed source yields `stale` with no recollections; a concurrent revision change yields `STALE_OPERATION`. See the [bounded inspection contract](memory-inspection.md#inspect-one-episode).
+
 `forget` removes the episode from native memory and invalidates derivatives from the earlier of its current and published start when applicable. `clearMemory` is character-scoped and requires the current revision. The host is responsible for deleting canonical source and cleaning up any saved reply contexts it owns. Rebuild reads the surviving included sources.
