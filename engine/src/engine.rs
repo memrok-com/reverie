@@ -1,5 +1,8 @@
 use crate::error::{Error, Result, identifier};
-use crate::model::{Contribution, Correction, Episode, Recall, Recollection, Settings, Source};
+use crate::model::{
+    Contribution, Correction, Episode, EpisodeInspection, EpisodeMemoryState, Recall, Recollection,
+    Settings, Source,
+};
 use crate::reflection::{self, fingerprint};
 use crate::store::MemoryStore;
 use crate::time::{DAY, assert_intervals, elapsed_description, fictional_time};
@@ -147,6 +150,7 @@ impl Reverie {
             "when" => self.when(&params),
             "status" => self.status(),
             "inspect" => self.inspect(&params),
+            "inspectEpisode" => serde_json::to_value(self.inspect_episode(&params)?).map_err(Into::into),
             "previewCorrection" => self.preview_correction(&params),
             "applyCorrection" => self.apply_correction(&params),
             "previewRedate" => self.preview_redate(&params),
@@ -495,6 +499,51 @@ impl Reverie {
             json!({"characterId":self.character_id, "revision":revision, "episodes":episodes, "memories":count,
             "operation":self.operation.lock().unwrap().clone()}),
         )
+    }
+
+    /// Read only this episode's saved recollections. Source is transient and never returned.
+    pub fn inspect_episode(&self, params: &Value) -> Result<EpisodeInspection> {
+        self.validate_params(params)?;
+        let id = required(params, "episodeId")?;
+        identifier(id, "Episode identity")?;
+        let (revision, episode, contribution) = self
+            .store
+            .lock()
+            .unwrap()
+            .inspect_episode(&self.character_id, id)?;
+        let mut result = EpisodeInspection {
+            character_id: self.character_id.clone(),
+            episode_id: id.into(),
+            revision,
+            state: EpisodeMemoryState::NotMemorized,
+            memories: Vec::new(),
+        };
+        if let Some(episode) = episode.filter(|item| item.included) {
+            result.state = EpisodeMemoryState::Invalidated;
+            if let Some(contribution) = contribution {
+                // An empty input_hash can represent a published player correction.
+                // Publication is determined by inclusion and the saved contribution.
+                result.state = EpisodeMemoryState::Stale;
+                let source = self.read_source(id, &Cancel::default());
+                if source.ok().flatten().is_some_and(|source| {
+                    source.hash == contribution.source_hash
+                        && contribution.start == episode.start
+                        && contribution.end == episode.now
+                        && contribution.label == episode.label
+                }) {
+                    result.state = EpisodeMemoryState::Published;
+                    result.memories = contribution.memories;
+                }
+                // Check even when source failed: never return a pre-callback revision.
+                if self.store.lock().unwrap().revision(&self.character_id)? != revision {
+                    return Err(Error::new(
+                        "STALE_OPERATION",
+                        "Memory changed while inspecting this episode. Inspect it again.",
+                    ));
+                }
+            }
+        }
+        Ok(result)
     }
 
     /// Complete player inspection is deliberately separate from bounded character retrieval.

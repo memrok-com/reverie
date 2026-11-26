@@ -16,6 +16,34 @@ pub struct Memory {
     pub source_message_ids: Vec<String>,
 }
 
+/// Player display fields, without source references or retrieval metadata.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct InspectedMemory {
+    pub gist: String,
+    pub detail: String,
+    pub feeling: String,
+    pub confidence: f64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum EpisodeMemoryState {
+    NotMemorized,
+    Invalidated,
+    Stale,
+    Published,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EpisodeInspection {
+    pub character_id: String,
+    pub episode_id: String,
+    pub revision: i64,
+    pub state: EpisodeMemoryState,
+    pub memories: Vec<InspectedMemory>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Impression {

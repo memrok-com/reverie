@@ -239,7 +239,10 @@ pub fn serve(character_id: String, database: &Path, settings: Settings) -> Resul
                     }
                 }
             }
-        } else if matches!(method, "inspect" | "previewCorrection" | "applyCorrection") {
+        } else if matches!(
+            method,
+            "inspect" | "inspectEpisode" | "previewCorrection" | "applyCorrection"
+        ) {
             // Source-reading player operations need the reader free to receive callback answers.
             workers.retain(|worker: &std::thread::JoinHandle<()>| !worker.is_finished());
             let engine = Arc::clone(&engine);

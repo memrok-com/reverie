@@ -8,6 +8,9 @@ pub mod store;
 pub mod time;
 pub mod transfer;
 
+#[cfg(test)]
+mod inspect_episode_tests;
+
 /// A real linked SQLite/FTS5 probe, kept small while the engine migration lands.
 pub fn storage_probe() -> rusqlite::Result<String> {
     let connection = rusqlite::Connection::open_in_memory()?;

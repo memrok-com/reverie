@@ -4,6 +4,32 @@ Inspection is a player-only view of published episode contributions. It reads ev
 
 After successful memorization, a host can inspect the published recollections and the separate broader-impression snapshot, including unchanged results. Inspection does not publish partial results from failed or cancelled operations.
 
+## Inspect one episode
+
+`inspectEpisode` is a separate read-only player operation. Supply required text `episodeId`, optionally the matching `characterId`. For example:
+
+```json
+{"id":1,"method":"inspectEpisode","params":{"episodeId":"meeting"}}
+{"id":1,"result":{"characterId":"mara","episodeId":"meeting","revision":17,"state":"published","memories":[{"gist":"You lent me your coat.","detail":"It was warm.","feeling":"Safe.","confidence":0.9}]}}
+```
+
+The Rust entry point is `Reverie::inspect_episode(&Value) -> Result<EpisodeInspection>`; `execute("inspectEpisode", params)` exposes the same contract. States are:
+
+| State | Meaning |
+| --- | --- |
+| `not-memorized` | The episode is excluded, or this valid ID is unknown in this character's scope. |
+| `invalidated` | The episode remains included but has no saved contribution. |
+| `stale` | The saved contribution's interval or label differs, or its exact source fingerprint cannot be confirmed. This includes changed, deleted, malformed, unavailable or timed-out source. |
+| `published` | A saved contribution matches the episode and current source, including contributions with zero recollections or a pending impressions rebuild after correction. |
+
+`memories` contains only the requested episode's saved recollections, in saved order, projected to `gist`, `detail`, `feeling`, and `confidence`. It is empty for every other state. Source, source references, corrections, impressions, dependencies and other episodes are never returned. This does not check freshness of earlier episodes or claim retrieval eligibility.
+
+The engine takes a consistent read snapshot using SQL scoped to this character and episode. It checks the existing cross-character ownership rule (`EPISODE_CHARACTER_MISMATCH`) without loading foreign data. Missing, non-text, empty or oversized IDs return `INVALID_INPUT`; a mismatching supplied character returns `CHARACTER_MISMATCH`.
+
+Only an included episode with a saved contribution causes a callback: at most one `source.read`, for exactly the requested character and episode, using the usual selected-branch source contract. The engine computes the source fingerprint itself; no model or other source callback occurs. Failure is closed: source callback errors yield `stale` without exposing callback error text or saved recollections. After the callback, the engine checks the character revision again, even if source failed. A changed revision returns `STALE_OPERATION`; retry the read. The stdio reader remains available while the callback waits. This read does not reserve a mutation operation: `cancel` retains its existing meaning for active mutations; closing the connection ends pending callbacks. There is no partial publication or recovery mutation, and retrying inspection is safe.
+
+The narrow query path deliberately does not call broad `inspect`, scan earlier dependencies, or read correction snapshots. It leaves revision, stored memory, engine version, storage format and mutation behavior unchanged. Broad `inspect` retains its existing contract. Authored saved fixtures and process checks are in [inspect-episode.test.mjs](../test/native/inspect-episode.test.mjs); direct Rust API checks live alongside the engine implementation.
+
 ## Correction contract
 
 Corrections repair factual or attribution errors in inspected recollections. They are explicit player edits, not automatic judgments about the companion's subjective feelings. The editor preserves feelings and uncertainty unless the player deliberately changes them. It never edits played source or moves an episode's fictional date.

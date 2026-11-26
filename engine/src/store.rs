@@ -1,10 +1,18 @@
 use crate::error::{Error, Result};
-use crate::model::{Contribution, Correction, Episode, Impression};
+use crate::model::{Contribution, Correction, Episode, Impression, InspectedMemory};
 use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
 use std::{collections::HashSet, path::Path};
 
 pub struct MemoryStore {
     pub(crate) db: Connection,
+}
+
+pub(crate) struct InspectedContribution {
+    pub source_hash: String,
+    pub label: String,
+    pub start: i64,
+    pub end: i64,
+    pub memories: Vec<InspectedMemory>,
 }
 
 pub struct Candidate {
@@ -162,6 +170,50 @@ impl MemoryStore {
             .prepare_cached("SELECT * FROM episodes WHERE character_id=? AND id=?")?
             .query_row(params![character, episode], episode_row)
             .optional()?)
+    }
+
+    /// One read snapshot; no collection scans, corrections, impressions or FTS reads.
+    pub(crate) fn inspect_episode(
+        &self,
+        character: &str,
+        episode: &str,
+    ) -> Result<(i64, Option<Episode>, Option<InspectedContribution>)> {
+        let tx = self.db.unchecked_transaction()?;
+        self.assert_episode_owner(character, episode)?;
+        let revision = self.revision(character)?;
+        let saved_episode = self.episode(character, episode)?;
+        let contribution = if saved_episode.as_ref().is_some_and(|item| item.included) {
+            let saved = tx
+                .query_row(
+                    "SELECT json_extract(data,'$.sourceHash'),json_extract(data,'$.label'),start,end,json_extract(data,'$.memories') FROM contributions WHERE character_id=? AND episode_id=?",
+                    params![character, episode],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, i64>(2)?,
+                            row.get::<_, i64>(3)?,
+                            row.get::<_, String>(4)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            saved
+                .map(|(source_hash, label, start, end, memories)| {
+                    Ok::<_, Error>(InspectedContribution {
+                        source_hash,
+                        label,
+                        start,
+                        end,
+                        memories: serde_json::from_str(&memories)?,
+                    })
+                })
+                .transpose()?
+        } else {
+            None
+        };
+        tx.commit()?;
+        Ok((revision, saved_episode, contribution))
     }
 
     pub fn set_episode(&mut self, character: &str, episode: &Episode) -> Result<()> {
